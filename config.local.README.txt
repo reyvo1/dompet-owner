@@ -1,0 +1,3 @@
+<?php
+// KONFIGURASI LOKAL — salin dari config.example.php, jangan di-commit!
+// (file asli berisi password DB; .gitignore mencegahnya masuk repo)

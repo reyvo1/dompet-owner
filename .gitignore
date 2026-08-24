@@ -1,0 +1,13 @@
+# Ignore OS junk
+Thumbs.db
+.DS_Store
+
+# Backups (besar & berisi data keuangan — JANGAN di-push)
+backups/
+
+# Konfigurasi lokal (berisi sandi DB)
+src/config.php
+
+# Dependensi lokal
+node_modules/
+vendor_bin/

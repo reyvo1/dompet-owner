@@ -1,0 +1,11 @@
+/* Font Plus Jakarta Sans — LOKAL, tidak butuh internet */
+@font-face{font-family:'Plus Jakarta Sans';font-style:normal;font-weight:400;
+  font-display:swap;src:url('jks-1.woff2') format('woff2')}
+@font-face{font-family:'Plus Jakarta Sans';font-style:normal;font-weight:500;
+  font-display:swap;src:url('jks-2.woff2') format('woff2')}
+@font-face{font-family:'Plus Jakarta Sans';font-style:normal;font-weight:600;
+  font-display:swap;src:url('jks-3.woff2') format('woff2')}
+@font-face{font-family:'Plus Jakarta Sans';font-style:normal;font-weight:700;
+  font-display:swap;src:url('jks-4.woff2') format('woff2')}
+@font-face{font-family:'Plus Jakarta Sans';font-style:normal;font-weight:800;
+  font-display:swap;src:url('jks-4.woff2') format('woff2')}
