@@ -11,3 +11,4 @@ src/config.php
 # Dependensi lokal
 node_modules/
 vendor_bin/
+tools/*.log

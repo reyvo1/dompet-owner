@@ -13,6 +13,21 @@ if ($uri === '/' || $uri === '/index.php') {
     include __DIR__ . '/index.php';
     return true;
 }
+if ($uri === '/report.php' || str_starts_with($uri, '/report.php?')) {
+    chdir(dirname(__DIR__));
+    require __DIR__ . '/../report.php';
+    return true;
+}
+if ($uri === '/invoice.php' || str_starts_with($uri, '/invoice.php?')) {
+    chdir(dirname(__DIR__));
+    require __DIR__ . '/../invoice.php';
+    return true;
+}
+if ($uri === '/tv.php') {
+    chdir(dirname(__DIR__));
+    require __DIR__ . '/../tv.php';
+    return true;
+}
 if (is_file(__DIR__ . $uri)) {
     return false;
 }

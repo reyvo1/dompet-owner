@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Dompet Owner</title>
+<meta name="theme-color" content="#155eef">
+<link rel="manifest" href="manifest.json">
 <script src="vendor/chart.umd.min.js"></script>
 <link rel="stylesheet" href="fonts/fonts-local.css">
 <link rel="stylesheet" href="theme.css?v=f3">
@@ -42,6 +44,10 @@
     <button class="nav-item" data-p="akuntansi"><span class="ic">📚</span>Akuntansi &amp; Pajak</button>
     <button class="nav-item" data-p="piutang"><span class="ic">📋</span>Piutang</button>
     <button class="nav-item" data-p="liab"><span class="ic">💳</span>Utang &amp; Kartu</button>
+    <button class="nav-item owner-only" data-p="stok"><span class="ic">📦</span>Stok</button>
+    <button class="nav-item owner-only" data-p="invoice"><span class="ic">🧾</span>Kwitansi</button>
+        <button class="nav-item owner-only" data-p="appr"><span class="ic">🔔</span>Persetujuan</button>
+    <button class="nav-item owner-only" data-p="audit"><span class="ic">📜</span>Audit Log</button>
     <button class="nav-item" data-p="pengaturan"><span class="ic">⚙️</span>Pengaturan</button>
     <div class="sidebar-health">Status sistem<br><b>● Semua normal</b></div>
   </aside>
@@ -49,6 +55,12 @@
   <div class="main-area">
     <header class="topbar">
       <h1 id="pageTitle">Dashboard</h1>
+      <div style="flex:1;max-width:340px;position:relative">
+        <input id="gSearch" placeholder="🔍 Cari transaksi, kategori, cabang..." autocomplete="off"
+          style="width:100%" oninput="globalSearch()" onfocus="if(gRes.innerHTML)gRes.style.display='block'">
+        <div id="gRes" style="display:none;position:absolute;top:110%;left:0;right:0;background:var(--fd-surface);
+          border:1px solid var(--fd-border);border-radius:12px;z-index:50;box-shadow:0 10px 30px rgba(0,0,0,.15);padding:8px"></div>
+      </div>
       <div class="topbar-right">
         <select id="bizSwitcher" class="biz-switcher" onchange="setBizProfile(this.value)" title="Profil bisnis">
           <option value="">Semua profil</option></select>
@@ -70,11 +82,16 @@
             <h2 id="heroKas">—</h2>
             <p id="todayStr"></p></div>
           <div style="display:flex;gap:8px">
+            <button class="btn secondary" onclick="window.open('tv.php','_blank')" title="Tampilan monitor toko">📺 TV</button>
+            <button class="btn secondary" onclick="openReport()">📄 Laporan PDF</button>
             <button class="btn secondary" onclick="exportCSV()">📥 Export Excel</button>
             <button class="btn" onclick="openAdd()">+ Catat Transaksi</button></div>
         </div>
       </div>
       <div id="insightBox" style="margin-bottom:16px"></div>
+      <div id="dueBanner" style="margin-bottom:16px"></div>
+      <div id="forecastBox"></div>
+      <div id="walletStrip" style="display:flex;gap:10px;overflow-x:auto;margin-bottom:16px;padding-bottom:4px"></div>
       <div class="panel" style="margin-bottom:16px">
         <h3 style="justify-content:space-between">📅 Kalender Keuangan (45 hari)
           <span id="calTotal" class="small"></span></h3>
@@ -105,10 +122,14 @@
           <select id="fBiz" onchange="loadTx()"><option value="">Semua cabang</option></select>
           <select id="fType" onchange="loadTx()"><option value="">Masuk & Keluar</option><option value="masuk">Masuk saja</option><option value="keluar">Keluar saja</option><option value="transfer">Transfer</option></select>
           <input id="fQ" placeholder="🔍 Cari keterangan..." oninput="loadTx()">
+          <select id="fCatF" onchange="loadTx()"><option value="">Semua kategori</option></select>
+          <input id="fMin" type="number" placeholder="Min Rp" onchange="loadTx()" style="max-width:110px">
+          <input id="fMax" type="number" placeholder="Maks Rp" onchange="loadTx()" style="max-width:110px">
           <input id="fFrom" type="date" onchange="loadTx()">
           <input id="fTo" type="date" onchange="loadTx()">
         </div>
         <div class="table-card" style="border:none;box-shadow:none"><div class="data-table-wrap"><table id="tblTx"></table></div></div>
+        <div id="txPager" style="display:flex;gap:10px;justify-content:center;margin-top:12px"></div>
       </div>
     </section>
 
@@ -175,6 +196,34 @@
       <div class="kpi-grid" id="walletCards"></div>
     </section>
 
+    <!-- STOK -->
+    <section id="p-stok" style="display:none">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px">
+        <div class="page-title"><h2>Stok Barang</h2><p>Jual/beli barang otomatis mencatat kas &amp; stok</p></div>
+        <button class="btn btn-sm" onclick="openProd()">+ Barang</button></div>
+      <div class="panel table-card"><div class="data-table-wrap"><table id="tblProd"></table></div></div>
+    </section>
+
+    <!-- KWITANSI -->
+    <section id="p-invoice" style="display:none">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px">
+        <div class="page-title"><h2>Kwitansi / Invoice</h2><p>Buat kwitansi digital, cetak atau kirim link ke pelanggan</p></div>
+        <button class="btn btn-sm" onclick="openInv()">+ Kwitansi</button></div>
+      <div class="panel table-card"><div class="data-table-wrap"><table id="tblInv"></table></div></div>
+    </section>
+
+    <!-- PERSETUJUAN -->
+    <section id="p-appr" style="display:none">
+      <div class="page-title" style="margin-bottom:18px"><h2>Persetujuan Pengeluaran</h2><p>Permintaan kariawan menunggu keputusanmu — belum masuk kas sebelum disetujui</p></div>
+      <div class="panel"><div id="apprList"></div></div>
+    </section>
+
+    <!-- AUDIT LOG -->
+    <section id="p-audit" style="display:none">
+      <div class="page-title" style="margin-bottom:18px"><h2>Riwayat Audit</h2><p>Siapa melakukan apa — aktivitas terakhir</p></div>
+      <div class="panel table-card"><div class="data-table-wrap"><table id="tblAudit"></table></div></div>
+    </section>
+
     <!-- PENGATURAN -->
     <section id="p-pengaturan" style="display:none">
       <div class="page-title" style="margin-bottom:18px"><h2>Pengaturan</h2><p>Koneksi Telegram &amp; AI — tersimpan aman di server (ter-mask)</p></div>
@@ -185,6 +234,7 @@
           <div class="small" style="margin-bottom:12px">1. Buat bot di @BotFather → copy token<br>2. Tempel di bawah → Simpan → Test koneksi</div>
           <input id="sBotToken" placeholder="Token bot (123456:ABC-DEF...)">
           <input id="sChatId" placeholder="Chat ID owner (angka)">
+          <input id="sBigTx" type="number" placeholder="Batas transaksi besar Rp (default 1000000)">
           <div class="row2" style="margin-top:4px">
             <label class="small" style="display:flex;gap:7px;align-items:center;padding:8px 0">
               <input type="checkbox" id="sNotifyTx" style="width:auto;margin:0"> Notif tiap transaksi</label>
@@ -209,6 +259,24 @@
            • Kariawan login bot: kirim <b>/start username password</b><br>
            • Owner input via tombol + di kanan bawah<br>
            • Semua transaksi langsung menggerakkan kas dompet</div>
+        </div>
+
+        <div class="panel">
+          <h3>🔒 Ganti Password</h3>
+          <div class="small" style="margin-bottom:12px">Password akun owner ini (login web)</div>
+          <input id="pwCur" type="password" placeholder="Password sekarang">
+          <input id="pwNew" type="password" placeholder="Password baru (min. 6 karakter)">
+          <input id="pwNew2" type="password" placeholder="Ulangi password baru">
+          <button class="btn btn-sm" style="margin-top:4px" onclick="changePassword()">🔑 Ganti Password</button>
+          <div id="pwStatus" class="small" style="margin-top:10px"></div>
+        </div>
+
+        <div class="panel">
+          <h3>🔒 Tutup Buku Bulanan</h3>
+          <div class="small" style="margin-bottom:12px">Bulan yang dikunci tidak bisa ditambah/hapus transaksinya. Bulan berjalan tidak bisa dikunci.</div>
+          <div class="row2"><input id="cbPeriod" placeholder="YYYY-MM (misal 2026-07)"><button class="btn btn-sm" onclick="closeBook()">🔒 Kunci</button></div>
+          <div id="cbList" class="small" style="margin-top:12px"></div>
+          <div id="cbStatus" class="small" style="margin-top:8px"></div>
         </div>
       </div>
 
@@ -254,6 +322,10 @@
         <table id="tblBS"></table></div>
       <div class="panel" style="margin-top:16px"><h3>💵 Arus Kas (bulan terpilih)</h3>
         <table id="tblCF"></table></div>
+      <div class="panel" style="margin-top:16px"><h3>🧾 Pajak 6 Bulan (PBJT &amp; PPh UMKM)
+        <span id="taxTotal" class="small"></span></h3><canvas id="chartTax" style="max-height:220px"></canvas></div>
+      <div class="panel table-card" style="margin-top:16px"><h3 style="padding:16px 18px 0">📚 Neraca Saldo (percobaan)</h3>
+        <div class="data-table-wrap"><table id="tblTrial"></table></div></div>
 
       <div class="panel" style="margin-top:16px">
         <h3>🧾 Aturan Pajak</h3>
@@ -374,13 +446,42 @@ async function renderBranch(){
 function fillBizSelect(){
   $('fBiz').innerHTML='<option value="">Semua cabang</option>'+meta.businesses.map(b=>`<option value="${b.id}">${b.icon?esc(b.icon)+' ':''}${esc(b.name)}</option>`).join('');
 }
+/* ===== PENCARIAN GLOBAL ===== */
+let gsTimer;
+function globalSearch(){
+  clearTimeout(gsTimer);
+  gsTimer=setTimeout(async()=>{
+    const q=$('gSearch').value.trim();
+    const el=$('gRes');
+    if(q.length<2){el.style.display='none';return;}
+    const d=await api('global_search',null,{q});
+    if(d.error){el.style.display='none';return;}
+    let h='';
+    if(d.transactions.length)h+='<div class="small" style="font-weight:700;padding:4px 6px">Transaksi</div>'+d.transactions.map(t=>
+      `<div style="padding:6px;display:flex;justify-content:space-between;gap:8px;cursor:pointer;border-radius:8px" onclick="gotoPage('transaksi');fQ.value='${esc(t.description).replace(/'/g,'')}';loadTx();gSearch.value='';gRes.style.display='none'">
+        <span>${t.tx_date} • ${esc((t.description||'').slice(0,34))}</span>
+        <b class="${t.type==='masuk'?'pos':'neg'}">${fmt(t.amount)}</b></div>`).join('');
+    if(d.categories.length)h+='<div class="small" style="font-weight:700;padding:4px 6px;margin-top:4px">Kategori</div>'+d.categories.map(c=>
+      `<div style="padding:6px;cursor:pointer;border-radius:8px" onclick="gotoPage('transaksi');fCatF.value='${esc(c.name)}';loadTx();gSearch.value='';gRes.style.display='none'">🏷️ ${esc(c.name)}</div>`).join('');
+    if(d.businesses.length)h+='<div class="small" style="font-weight:700;padding:4px 6px;margin-top:4px">Cabang</div>'+d.businesses.map(b=>
+      `<div style="padding:6px;cursor:pointer;border-radius:8px" onclick="setBizProfile('${b.id}');gSearch.value='';gRes.style.display='none'">${b.icon||'🏪'} ${esc(b.name)}</div>`).join('');
+    el.innerHTML=h||'<div style="padding:8px" class="small">Tidak ada hasil</div>';
+    el.style.display='block';
+  },250);
+}
+document.addEventListener('click',e=>{const g=$('gRes');if(g&&!e.target.closest('#gSearch')&&!e.target.closest('#gRes'))g.style.display='none';});
+
 /* ===== MULTI-PROFIL BISNIS: switcher di topbar ===== */
 let BIZ_PROFILE=''; // '' = semua profil
 function fillBizSwitcher(){
   const el=$('bizSwitcher');if(!el)return;
-  el.innerHTML='<option value="">🏬 Semua profil</option>'+meta.businesses.map(b=>
+  el.innerHTML='<option value="">🏬 Semua profil (usaha+pribadi)</option><option value="pribadi">👤 Buku Pribadi</option>'+meta.businesses.map(b=>
     `<option value="${b.id}">${b.icon?esc(b.icon):'🏪'} ${esc(b.name)}</option>`).join('');
   el.value=BIZ_PROFILE;
+}
+function gotoPage(p){
+  const btn=document.querySelector('.nav-item[data-p="'+p+'"]');
+  if(btn)btn.click();else{view=p;renderPage();}
 }
 function setBizProfile(v){
   BIZ_PROFILE=v||'';
@@ -405,12 +506,14 @@ document.querySelectorAll('.nav-item').forEach(b=>b.addEventListener('click',()=
   renderPage();
 }));
 function renderPage(){
-  ['dashboard','transaksi','tagihan','target','anggaran','berulang','kas','cabang','laporan','akuntansi','piutang','liab','pengaturan'].forEach(p=>{
+  document.querySelectorAll('.nav-item.owner-only').forEach(b=>b.style.display=(ME&&ME.role==='owner')?'':'none');
+  ['dashboard','transaksi','tagihan','target','anggaran','berulang','kas','cabang','laporan','akuntansi','piutang','liab','appr','audit','stok','invoice','pengaturan'].forEach(p=>{
     const el=$('p-'+p);if(el)el.style.display=p===view?'':'none';});
-  ({dashboard:(ME&&ME.role==='kariawan')?renderBranch:renderDash,transaksi:loadTx,tagihan:loadBills,target:loadGoals,
+if($('fCatF')&&!$('fCatF').options.length){$('fCatF').innerHTML='<option value="">Semua kategori</option>'+(meta?.categories||[]).map(c=>`<option>${esc(c.name)}</option>`).join('');}
+    ({dashboard:(ME&&ME.role==='kariawan')?renderBranch:renderDash,transaksi:loadTx,tagihan:loadBills,target:loadGoals,
     anggaran:loadBudgets,berulang:loadRec,kas:renderWallets,cabang:renderCabang,laporan:renderReport,
-    akuntansi:renderAkuntansi,piutang:loadRecv,liab:loadLiab,
-    pengaturan:()=>{loadSettings();renderCatManager();loadRuleManager();}}[view]||(()=>{}))();
+    akuntansi:renderAkuntansi,piutang:loadRecv,liab:loadLiab,appr:loadAppr,audit:loadAudit,stok:loadProd,invoice:loadInv,
+    pengaturan:()=>{loadSettings();renderCatManager();loadRuleManager();loadClosedPeriods();}}[view]||(()=>{}))();
 }
 
 /* ===== ATURAN CERDAS (smart rules) ===== */
@@ -532,11 +635,170 @@ async function loadCalendar(){
   }).join('')+'</div>';
 }
 
+
+/* ===== STOK BARANG ===== */
+async function loadProd(){
+  const [d,m]=await Promise.all([api('prod_list'),api('meta')]);
+  if(d.error)return;
+  PRODBIZ=m.businesses||[];
+  let h='<thead><tr><th>Barang</th><th>Cabang</th><th style="text-align:right">H. Beli</th><th style="text-align:right">H. Jual</th><th style="text-align:right">Stok</th><th>Aksi</th></tr></thead><tbody>';
+  for(const r of d.rows){
+    const low=(float(r.stock)<=float(r.min_stock))&&float(r.min_stock)>0;
+    h+=`<tr><td><b>${esc(r.name)}</b>${r.sku?`<br><span class="small">${esc(r.sku)}</span>`:''}</td>
+     <td class="small">${esc(r.biz||'pribadi')}</td>
+     <td style="text-align:right" class="small">${fmt(r.cost_price)}</td>
+     <td style="text-align:right" class="small">${fmt(r.sell_price)}</td>
+     <td style="text-align:right"><b class="${low?'neg':''}">${r.stock} ${esc(r.unit)}</b>${low?'<br><span class="small neg">menipis!</span>':''}</td>
+     <td style="white-space:nowrap">
+       <button class="btn btn-sm btn-green" onclick="moveStock(${r.id},'in','${esc(r.name)}')">📥 Masuk</button>
+       <button class="btn btn-sm" onclick="moveStock(${r.id},'out','${esc(r.name)}')">📤 Keluar</button>
+       <button class="btn btn-sm btn-red" onclick="delProd(${r.id})">✕</button></td></tr>`;
+  }
+  $('tblProd').innerHTML=h+'</tbody>'||'<tr><td colspan=6 class=empty>Belum ada barang</td></tr>';
+}
+const float=v=>parseFloat(v)||0;
+function openProd(){
+  $('modal').innerHTML=`<div class="modal-bg" onclick="if(event.target===this)closeModal()">
+   <div class="modal"><h1 style="font-size:17px">📦 Barang Baru</h1>
+    <input id="pname" placeholder="Nama barang">
+    <div class="row2"><input id="psku" placeholder="SKU (opsional)"><input id="punit" placeholder="satuan" value="pcs"></div>
+    <div class="row2"><input id="pcost" type="number" placeholder="Harga beli"><input id="psell" type="number" placeholder="Harga jual"></div>
+    <div class="row2"><input id="pstock" type="number" placeholder="Stok awal"><input id="pmin" type="number" placeholder="Stok minimum"></div>
+    <select id="pbiz"><option value="">— Pribadi —</option>${(PRODBIZ||meta.businesses).map(b=>`<option value="${b.id}">${esc(b.name)}</option>`).join('')}</select>
+    <button onclick="saveProd()">Simpan</button><div id="merr" class="small neg" style="margin-top:8px"></div></div></div>`;
+}
+async function saveProd(){
+  const d=await api('prod_save',{name:pname.value,sku:psku.value,unit:punit.value||'pcs',
+    cost_price:+(pcost.value||0),sell_price:+(psell.value||0),
+    stock:+(pstock.value||0),min_stock:+(pmin.value||0),business_id:pbiz.value||null});
+  if(d.error){merr.textContent=d.error;return;}
+  closeModal();toast('Barang tersimpan ✅');loadProd();
+}
+async function delProd(id){if(!confirm('Hapus barang ini?'))return;
+  const d=await api('prod_delete',{id});if(d.ok){toast('Dihapus');loadProd();}else toast(d.error);}
+function moveStock(id,dir,name){
+  $('modal').innerHTML=`<div class="modal-bg" onclick="if(event.target===this)closeModal()">
+   <div class="modal"><h1 style="font-size:17px">${dir==='in'?'📥 Stok Masuk':'📤 Stok Keluar'} — ${esc(name)}</h1>
+    <input id="sqty" type="number" placeholder="Jumlah">
+    ${dir==='out'?'<label class="small" style="display:flex;gap:7px;align-items:center;padding:6px 0"><input type="checkbox" id="smktx" checked style="width:auto"> Catat juga sebagai penjualan (masuk kas)</label>':'<label class="small" style="display:flex;gap:7px;align-items:center;padding:6px 0"><input type="checkbox" id="smktx" checked style="width:auto"> Catat juga sebagai pembelian (keluar kas)</label>'}
+    <button onclick="doMove(${id},'${dir}')">Simpan</button><div id="merr" class="small neg" style="margin-top:8px"></div></div></div>`;
+}
+async function doMove(id,dir){
+  if(!sqty.value){merr.textContent='Isi jumlah';return;}
+  const d=await api('stock_move',{product_id:id,direction:dir,qty:+sqty.value,make_transaction:smktx.checked});
+  if(d.error){merr.textContent=d.error;return;}
+  closeModal();toast('Stok diperbarui ✅');loadProd();renderPage();
+}
+
+/* ===== KWITANSI ===== */
+async function loadInv(){
+  const d=await api('inv_list');if(d.error)return;
+  let h='<thead><tr><th>No.</th><th>Pelanggan</th><th style="text-align:right">Jumlah</th><th>Status</th><th>Aksi</th></tr></thead><tbody>';
+  for(const r of d.rows){
+    h+=`<tr><td class="small"><b>${esc(r.number)}</b><br>${(r.created_at||'').slice(0,10)}</td>
+     <td><b>${esc(r.customer_name)}</b>${r.biz?`<br><span class="small">${esc(r.biz)}</span>`:''}</td>
+     <td style="text-align:right;font-weight:700">${fmt(r.amount)}</td>
+     <td>${r.status==='paid'?'<span class="badge b-done">LUNAS</span>':r.status==='void'?'<span class="badge b-keluar">BATAL</span>':'<span class="badge b-wait">BELUM</span>'}</td>
+     <td style="white-space:nowrap"><a href="invoice.php?id=${r.id}" target="_blank" class="btn btn-sm secondary" style="text-decoration:none">🖨️ Cetak</a>
+       ${r.status==='unpaid'?`<button class="btn btn-sm btn-green" onclick="payInv(${r.id})">💵 Lunasi</button>`:''}</td></tr>`;
+  }
+  $('tblInv').innerHTML=h+'</tbody>'||'<tr><td colspan=5 class=empty>Belum ada kwitansi</td></tr>';
+}
+function openInv(){
+  $('modal').innerHTML=`<div class="modal-bg" onclick="if(event.target===this)closeModal()">
+   <div class="modal"><h1 style="font-size:17px">🧾 Kwitansi Baru</h1>
+    <input id="icust" placeholder="Nama pelanggan">
+    <input id="iamt" type="number" placeholder="Nominal (contoh 250000)">
+    <textarea id="idesc" rows="3" placeholder="Keterangan (untuk pembayaran apa)"></textarea>
+    <button onclick="saveInv()">Buat Kwitansi</button><div id="merr" class="small neg" style="margin-top:8px"></div></div></div>`;
+}
+async function saveInv(){
+  const d=await api('inv_create',{customer_name:icust.value,amount:+(iamt.value||0),description:idesc.value});
+  if(d.error){merr.textContent=d.error;return;}
+  closeModal();toast('Kwitansi dibuat ✅');loadInv();
+}
+async function payInv(id){
+  if(!confirm('Lunasi kwitansi ini? Kas otomatis bertambah.'))return;
+  const d=await api('inv_pay',{id});
+  if(d.ok){toast('Pembayaran dicatat ✅');loadInv();renderPage();}else toast(d.error);
+}
+
+/* ===== PERSETUJUAN & AUDIT ===== */
+async function loadAppr(){
+  const d=await api('appr_list');if(d.error)return;
+  const el=$('apprList');
+  el.innerHTML=d.rows.length?d.rows.map(a=>`<div class="rank-row"><div class="rank-copy">
+    <div class="rank-index" style="font-size:13px;background:var(--fd-surface-2)">🔔</div>
+    <div class="rank-name"><strong>${esc(a.requester||'?')} — ${fmt(a.amount)}</strong>
+      <span>${esc(a.description)} • ${a.biz?esc(a.biz):'pribadi'} • ${a.created_at.slice(0,16)}</span></div>
+    <div style="display:flex;gap:6px">
+      <button class="btn btn-sm btn-green" onclick="decideAppr(${a.id},'approve')">✓ Setujui</button>
+      <button class="btn btn-sm btn-red" onclick="decideAppr(${a.id},'reject')">✕ Tolak</button></div>
+    </div></div>`).join(''):'<div class="empty">Tidak ada permintaan menunggu 🎉</div>';
+}
+async function decideAppr(id,decision){
+  const d=await api('appr_decide',{id,decision});
+  if(d.ok){toast(decision==='approve'?'Disetujui & dicatat ✅':'Ditolak');loadAppr();}else toast(d.error);
+}
+async function loadAudit(){
+  const d=await api('audit_log_list');if(d.error)return;
+  let h='<thead><tr><th>Waktu</th><th>User</th><th>Aksi</th><th>Detail</th></tr></thead><tbody>';
+  for(const r of d.rows)h+=`<tr><td style="white-space:nowrap">${(r.created_at||'').slice(0,16)}</td>
+    <td><b>${esc(r.username||'—')}</b></td><td><span class="badge b-transfer">${esc(r.action)}</span></td>
+    <td class="small">${esc(r.detail||'')}</td></tr>`;
+  $('tblAudit').innerHTML=h+'</tbody>'||'<tr><td colspan=4 class=empty>Belum ada aktivitas</td></tr>';
+}
+
+/* ===== BANNER JATUH TEMPO ===== */
+async function loadDueBanner(){
+  const el=$('dueBanner');if(!el)return;
+  const d=await api('calendar',null,{days:3});
+  if(d.error||!d.rows.length){el.innerHTML='';return;}
+  const due=d.rows.filter(r=>r.flow==='keluar');
+  if(!due.length){el.innerHTML='';return;}
+  el.innerHTML=`<div class="panel" style="border-left:4px solid var(--fd-danger,#c0392b)">
+    <h3>⏰ Jatuh tempo ≤3 hari — ${due.length} kewajiban • total ${fmt(due.reduce((a,r)=>a+r.amount,0))}</h3>
+    <div class="rank-list">${due.map(r=>{
+      const days=Math.round((new Date(r.date)-new Date(d.today))/86400000);
+      const when=days<0?'<span class="badge b-keluar">TERLAMBAT</span>':days===0?'<span class="badge b-wait">HARI INI</span>':`<span class="small">${days} hari lagi</span>`;
+      return `<div class="rank-row"><div class="rank-copy">
+        <div class="rank-index" style="background:var(--fd-surface-2);font-size:13px">${r.icon}</div>
+        <div class="rank-name"><strong>${esc(r.title)}</strong><span>${when}</span></div>
+        <div class="rank-value neg">${fmt(r.amount)}</div></div></div>`;
+    }).join('')}</div>
+    <button class="btn btn-sm" style="margin-top:10px" onclick="gotoPage('tagihan')">Bayar sekarang →</button></div>`;
+}
+
 /* ===== DASHBOARD ===== */
 async function renderDash(){
   const s=(await api('summary',null,summaryQ()));if(s.error)return;summary=s;
   $('heroKas').textContent=fmt(s.total_kas);
-  loadInsight();loadCalendar();
+  loadInsight();loadCalendar();loadDueBanner();loadBudgetWarn();
+  // proyeksi arus kas + anomali
+  const [fc,an]=await Promise.all([api('cashflow_forecast'),api('anomalies')]);
+  const fcEl=$('forecastBox');
+  if(fcEl&&!fc.error){const neg=fc.proj_30d<fc.kas_now*0.5;
+    fcEl.innerHTML=`<div class="panel" style="margin-bottom:16px;border-left:4px solid var(--fd-brand,#155eef)">
+      <h3>🔮 Proyeksi 30 Hari <span class="small">(ritme 90 hari terakhir)</span></h3>
+      <div style="display:flex;gap:20px;flex-wrap:wrap;margin-top:6px">
+        <div><div class="small">Kas sekarang</div><b>${fmt(fc.kas_now)}</b></div>
+        <div><div class="small">Proyeksi realistis</div><b class="${fc.proj_30d>=fc.kas_now?'pos':'neg'}">${fmt(fc.proj_30d)}</b></div>
+        <div><div class="small">Skenario optimis</div><b class="pos">${fmt(fc.optimis_30d)}</b></div>
+        <div><div class="small">Skenario pesimis</div><b class="neg">${fmt(fc.pesimis_30d)}</b></div>
+        <div><div class="small">Tagihan rutin/bln</div><b>${fmt(fc.monthly_bills)}</b></div>
+      </div></div>`;}
+  if(an&&!an.error&&an.rows.length){
+    $('dueBanner').insertAdjacentHTML('beforeend',`<div class="panel" style="border-left:4px solid #b86b00;margin-top:12px">
+      <h3>⚠️ Anomali pengeluaran bulan ini</h3>
+      ${an.rows.map(r=>`<div class="rank-row" style="padding:6px 0"><div class="rank-copy">
+        <div class="rank-name"><strong>${esc(r.cat)} — ${fmt(r.amount)}</strong>
+          <span>${r.multiple}x lipat rata-rata biasanya • ${esc((r.description||'').slice(0,40))}</span></div></div></div>`).join('')}
+      </div>`);
+  }
+  const ki={cash:'💵',bank:'🏦',ewallet:'📱',other:'💼'};
+  $('walletStrip').innerHTML=s.wallets.map(w=>`<div class="kpi-card" style="min-width:150px;padding:12px 14px">
+    <div class="kpi-label">${ki[w.kind]||'💼'} ${esc(w.name)}${w.is_default?' ⭐':''}</div>
+    <div style="font-size:17px;font-weight:800;margin-top:3px">${fmt(w.balance)}</div></div>`).join('');
   const totIn=s.usaha.masuk+s.pribadi.masuk, totOut=s.usaha.keluar+s.pribadi.keluar;
   const icon=(cl,i)=>`<div class="kpi-icon ${cl}">${i}</div>`;
   $('stats').innerHTML=`
@@ -630,21 +892,27 @@ async function loadInsight(){
   }
   $('insightBox').innerHTML=chips?`<div style="display:flex;gap:14px;flex-wrap:wrap">${chips}</div>`:'';
 }
-function exportCSV(){
+function exportCSV(scope,biz){
   const p=new URLSearchParams({action:'export_csv',
     from:$('fFrom')?.value||'',to:$('fTo')?.value||''});
+  if(biz)p.set('business_id',biz);
   window.open('api.php?'+p.toString(),'_blank');
 }
 
 /* ===== TRANSAKSI ===== */
-let txTimer;
+let txTimer,sortState={col:'date',dir:'desc'},TXPAGE=null;
+function setSort(c){if(sortState.col===c)sortState.dir=sortState.dir==='desc'?'asc':'desc';else sortState={col:c,dir:'desc'};loadTx();}
+function txGo(p){TXPAGE=p;window.scrollTo({top:0,behavior:'smooth'});loadTx();}
 async function loadTx(){
   clearTimeout(txTimer);
   txTimer=setTimeout(async()=>{
     const d=await api('tx_list',{scope:fScope.value,business_id:fBiz.value,type:fType.value,
-      q:fQ.value,from:fFrom.value,to:fTo.value,limit:200});
+      q:fQ.value,from:fFrom.value,to:fTo.value,
+      category:fCatF?.value||'',min_amount:fMin?.value||'',max_amount:fMax?.value||'',
+      limit:50,page:TXPAGE||1,sort:sortState.col,dir:sortState.dir});
     if(d.error)return;
-    let h='<thead><tr><th>Tanggal</th><th>Jenis</th><th>Rincian</th><th>Scope/Cabang</th><th>Kas</th><th style="text-align:right">Jumlah</th><th></th></tr></thead><tbody>';
+    TXPAGE=d;const arrow=c=>(sortState.col===c)?(sortState.dir==='desc'?' ▼':' ▲'):'';
+    let h='<thead><tr><th onclick="setSort(\'date\')" style="cursor:pointer">Tanggal'+arrow('date')+'</th><th>Jenis</th><th>Rincian</th><th>Scope/Cabang</th><th>Kas</th><th onclick="setSort(\'amount\')" style="cursor:pointer;text-align:right">Jumlah'+arrow('amount')+'</th><th></th></tr></thead><tbody>';
     for(const r of d.rows){
       h+=`<tr><td style="white-space:nowrap">${r.tx_date}</td>
         <td><span class="badge b-${r.type}">${r.type}</span></td>
@@ -652,9 +920,15 @@ async function loadTx(){
         <td>${r.biz?`<span class="badge b-usaha">${esc(r.biz)}</span>`:'<span class="badge b-pribadi">pribadi</span>'}</td>
         <td class="small">${esc(r.wallet||'')}</td>
         <td style="text-align:right;font-weight:700" class="${r.type==='masuk'?'pos':'neg'}">${r.type==='masuk'?'+':'−'}${fmt(r.amount).slice(3)}</td>
-        <td><span style="cursor:pointer" title="hapus" onclick="delTx(${r.id})">🗑️</span></td></tr>`;
+        <td><span style="cursor:pointer" title="lampiran nota" onclick="openAtt(${r.id},${JSON.stringify(r.description)})">📎</span>
+            <span style="cursor:pointer" title="hapus" onclick="delTx(${r.id})">🗑️</span></td></tr>`;
     }
-    $('tblTx').innerHTML=h+'</tbody>'||'<tr><td colspan=7 class=empty>Tidak ada hasil</td></tr>';
+    $('tblTx').innerHTML=h+'</tbody>';
+    const pg=$('txPager');
+    if(pg){pg.innerHTML=d.pages>1?`<button class="btn btn-sm secondary" ${d.page<=1?'disabled':''} onclick="txGo(${d.page-1})">← Sebelumnya</button>
+      <span class="small" style="align-self:center">Halaman ${d.page}/${d.pages} • ${d.total} transaksi</span>
+      <button class="btn btn-sm secondary" ${d.page>=d.pages?'disabled':''} onclick="txGo(${d.page+1})">Berikutnya →</button>`
+      :`<span class="small">${d.total} transaksi</span>`;}
   },200);
 }
 async function delTx(id){
@@ -683,10 +957,16 @@ function openAdd(){
      <div></div></div>`:''}
     <input id="famt" type="number" placeholder="Nominal (contoh 150000)">
     <input id="fdesc" placeholder="Keterangan">
+    <div id="fdestWrap" style="display:none"><select id="fdest"><option value="">— Ke rekening —</option>${summary.wallets.map(w=>`<option value="${w.id}">→ ${esc(w.name)}</option>`).join('')}</select></div>
     ${catWallet}
-    <button onclick="saveTx()">Simpan</button>
+    <div class="row2" style="gap:8px">
+      <button onclick="saveTx()">Simpan</button>
+      ${isK?'<button class="btn secondary" onclick="requestAppr()" title="Kirim ke bos dulu untuk disetujui">🔔 Minta Setujui</button>':''}
+    </div>
+    ${isK?'<div class="small" style="margin-top:6px">Pakai 🔔 untuk pengeluaran besar — masuk kas setelah bos setujui</div>':''}
     <div id="merr" class="small neg" style="margin-top:8px"></div></div></div>`;
 }
+document.addEventListener('change',e=>{if(e.target&&e.target.id==='ftype'){const w=$('fdestWrap');if(w)w.style.display=e.target.value==='transfer'?'block':'none';}});
 async function saveTx(){
   const isK = ME && ME.role==='kariawan';
   let type, body;
@@ -696,11 +976,51 @@ async function saveTx(){
   }else{
     type = ftype.value;
     body = {type:ftype.value==='transfer'?'transfer':ftype.value,amount:+famt.value,description:fdesc.value,
-      business_id:fbiz.value||null,category:fcat.value||null,wallet_id:fwallet.value||null};
+      business_id:fbiz.value||null,category:fcat.value||null,wallet_id:fwallet.value||null,
+      wallet_dest_id:type==='transfer'?(fdest?.value||null):null};
   }
   const d=await api(isK?'tx_add_branch':'tx_add',body);
   if(d.error){merr.textContent=d.error;return;}
   closeModal();toast('Tersimpan ✅ Bos sudah dapat notif');renderPage();
+}
+async function requestAppr(){
+  const isK = ME && ME.role==='kariawan';
+  if(!famt.value||!fdesc.value){merr.textContent='Isi nominal & keterangan dulu';return;}
+  const d=await api('appr_request',{type:(ftype2?.value||'keluar'),amount:+famt.value,description:fdesc.value});
+  if(d.error){merr.textContent=d.error;return;}
+  closeModal();toast('Permintaan terkirim ke bos ⏳');renderPage();
+}
+
+
+/* ===== LAMPIRAN FOTO NOTA ===== */
+let attDesc='';
+async function openAtt(txId,desc){
+  attDesc=desc||'';
+  const d=await api('att_list',null,{tx_id:txId});
+  if(d.error){toast(d.error);return;}
+  const list=d.rows.map(a=>`<div style="display:flex;gap:10px;align-items:center;padding:6px 0;border-bottom:1px solid var(--fd-border)">
+     <img src="uploads/${a.filename}" style="width:56px;height:56px;object-fit:cover;border-radius:8px" onclick="viewAtt('uploads/${a.filename}')">
+     <div class="small">${esc(a.original_name||a.filename)}</div></div>`).join('');
+  $('modal').innerHTML=`<div class="modal-bg" onclick="if(event.target===this)closeModal()">
+   <div class="modal"><h1 style="font-size:17px">📎 Lampiran Nota</h1>
+    <div class="sub">${esc(desc||'')}</div>
+    ${list||'<div class="empty">Belum ada foto nota</div>'}
+    <input id="attFile" type="file" accept="image/jpeg,image/png,image/webp" style="margin-top:12px">
+    <button onclick="upAtt(${txId})">⬆️ Upload Foto</button>
+    <div id="merr" class="small neg" style="margin-top:8px"></div></div></div>`;
+}
+async function upAtt(txId){
+  const f=$('attFile').files[0];
+  if(!f){merr.textContent='Pilih foto dulu';return;}
+  const fd=new FormData();fd.append('tx_id',txId);fd.append('file',f);
+  const r=await fetch('api.php?action=att_upload',{method:'POST',body:fd,credentials:'same-origin'});
+  const d=await r.json();
+  if(d.error){merr.textContent=d.error;return;}
+  toast('Foto tersimpan ✅');openAtt(txId,attDesc);
+}
+function viewAtt(src){
+  $('modal').innerHTML=`<div class="modal-bg" onclick="if(event.target===this)closeModal()" style="background:rgba(0,0,0,.85)">
+   <img src="${src}" style="max-width:92vw;max-height:90vh;border-radius:12px"></div>`;
 }
 
 /* ===== TAGIHAN ===== */
@@ -799,6 +1119,26 @@ async function saveGoal(){
 }
 
 /* ===== BUDGETS ===== */
+function openReport(){
+  const per=window.prompt('Periode laporan (YYYY-MM):',new Date().toISOString().slice(0,7));
+  if(per&&/^\d{4}-\d{2}$/.test(per))window.open('report.php?period='+per,'_blank');
+}
+/* ===== PERINGATAN ANGGARAN (banner dashboard) ===== */
+async function loadBudgetWarn(){
+  const el=$('dueBanner');if(!el)return;
+  const d=await api('budgets');if(d.error)return;
+  const warn=d.budgets.filter(b=>b.spent/b.amount>=0.85);
+  if(!warn.length)return;
+  el.insertAdjacentHTML('beforeend',`<div class="panel" style="border-left:4px solid #b86b00;margin-top:${el.innerHTML.trim()?12:0}px">
+    <h3>🧮 Anggaran hampir habis / lewat batas</h3>
+    <div class="rank-list">${warn.map(b=>{
+      const pct=Math.round(b.spent/b.amount*100);
+      return `<div class="rank-row"><div class="rank-copy">
+        <div class="rank-name"><strong>${esc(b.cat)} <span class="small" style="font-weight:400">• ${b.business_id?'usaha':'pribadi'}</span></strong>
+          <span>${fmt(b.spent)} / ${fmt(b.amount)}</span></div>
+        <div class="rank-value ${pct>100?'neg':''}" style="font-weight:800">${pct}%</div></div></div>`;
+    }).join('')}</div></div>`);
+}
 async function loadBudgets(){
   const d=await api('budgets');if(d.error)return;
   $('budgetPeriod').textContent='Periode '+d.period;
@@ -838,9 +1178,10 @@ async function renderCabang(){
     <div class="kpi-head"><div class="kpi-label">${c.icon?esc(c.icon):'🏪'} ${esc(c.name).toUpperCase()}</div>
       <div class="kpi-icon green">🏪</div></div>
     <div class="kpi-value ${c.laba>=0?'pos':'neg'}" style="${c.color?'color:'+c.color:''}">${fmt(c.laba)}</div>
-    <div class="kpi-note">masuk ${fmt(c.masuk)} • keluar ${fmt(c.keluar)} • ${c.kariawan} kariawan</div>
+    <div class="kpi-note">masuk ${fmt(c.masuk)} • keluar ${fmt(c.keluar)} • ${c.kariawan} kariawan${c.masuk>0?` • margin <b>${Math.round(c.laba/c.masuk*100)}%</b>`:''}</div>
     <div style="display:flex;gap:6px;margin-top:10px">
       <button class="btn btn-sm secondary" onclick="openBizEdit(${c.id})">✏️ Edit</button>
+      <button class="btn btn-sm secondary" onclick="exportCSV(null,${c.id})" title="Export Excel transaksi cabang ini">📥 Excel</button>
       <button class="btn btn-sm btn-red" onclick="delBiz(${c.id},'${esc(c.name)}')">Tutup</button></div></div>`).join('')
    +`<div class="kpi-card"><div class="kpi-head"><div class="kpi-label">👤 PRIBADI OWNER</div>
      <div class="kpi-icon violet">👤</div></div>
@@ -1022,6 +1363,7 @@ async function loadSettings(){
   sBotToken.placeholder=d.bot_token_set?('Tersimpan: '+d.bot_token_masked):'Token bot (123456:ABC-DEF...)';
   sGemini.placeholder=d.gemini_key_set?('Tersimpan: '+d.gemini_key_masked):'API key Gemini (AIza...)';
   sChatId.value=d.owner_chat_id||'';
+  if(d.big_tx_limit)sBigTx.placeholder='Batas sekarang: Rp '+(+d.big_tx_limit).toLocaleString('id-ID');
   sNotifyTx.checked=d.notify_transactions==='1';
   sNotifyBill.checked=d.notify_bills==='1';
   tgStatus.textContent=d.bot_token_set?'🟢 Bot token sudah terpasang'+(d.bot_username?' (@'+d.bot_username+')':''):'⚪ Token belum diisi';
@@ -1085,6 +1427,26 @@ async function catDel(id){
   const d=await api('cat_delete',{id});
   if(d.ok){toast('Terhapus');meta=await api('meta');renderCatManager();}else toast(d.error,1);
 }
+async function loadClosedPeriods(){
+  const d=await api('closed_periods');if(d.error)return;
+  $('cbList').innerHTML=d.rows.length?'Terkunci: '+d.rows.map(r=>`<span class="kbd" style="background:var(--fd-surface-2);border:1px solid var(--fd-border);border-radius:7px;padding:2px 8px;margin-right:6px">${r.period} <a href="#" onclick="reopenBook('${r.period}');return false" style="color:var(--fd-danger)">✕</a></span>`).join(''):'Belum ada bulan yang dikunci.';
+}
+async function closeBook(){
+  const per=(cbPeriod.value||'').trim();
+  const d=await api('close_book',{period:per});
+  cbStatus.textContent=d.ok?'🟢 Periode '+per+' terkunci':'🔴 '+(d.error||'Gagal');
+  if(d.ok){cbPeriod.value='';loadClosedPeriods();}
+}
+async function reopenBook(per){
+  if(!confirm('Buka kembali periode '+per+'?'))return;
+  await api('reopen_book',{period:per});loadClosedPeriods();
+}
+async function changePassword(){
+  if(pwNew.value!==pwNew2.value){pwStatus.textContent='🔴 Password baru tidak sama';return;}
+  const d=await api('change_password',{current:pwCur.value,new:pwNew.value});
+  pwStatus.textContent=d.ok?'🟢 Password berhasil diganti':'🔴 '+(d.error||'Gagal');
+  if(d.ok){pwCur.value=pwNew.value=pwNew2.value='';}
+}
 async function testGemini(){
   await saveSettings();
   aiStatus.textContent='⏳ Menguji AI...';
@@ -1096,9 +1458,9 @@ async function testGemini(){
 async function renderAkuntansi(){
   if(!$('accPeriod').value) $('accPeriod').value=new Date().toISOString().slice(0,7);
   const per=$('accPeriod').value;
-  const [plD,bsD,cfD,trD,unres]=await Promise.all([
+  const [plD,bsD,cfD,trD,unres,txD,trD2]=await Promise.all([
     api('acc_pl',{period:per}),api('acc_balance'),api('acc_cashflow',{period:per}),
-    api('tax_rules'),api('tax_unresolved')]);
+    api('tax_rules'),api('tax_unresolved'),api('tax_summary'),api('acc_trial')]);
   if(plD.error)return;
 
   const pl=plD.pl;
@@ -1161,6 +1523,30 @@ function openTaxRule(){
    <div class="row2"><input id="txfrom" type="date" title="Berlaku dari"><input id="txto" type="date" title="Berlaku sampai"></div>
    <button onclick="saveTaxRule()">Simpan</button><div id="merr" class="small neg" style="margin-top:8px"></div></div></div>`;
 }
+  // grafik pajak 6 bulan
+  if(txD&&!txD.error){
+    const lbl=txD.months.map(m=>m.slice(5)+'/'+m.slice(2,4));
+    $('taxTotal').textContent=`total PBJT ${fmt(txD.total_pbjt)} • PPh ${fmt(txD.total_pph)}`;
+    charts.tax?.destroy();
+    const cv=$('chartTax');
+    if(cv&&window.Chart)charts.tax=new Chart(cv,{type:'bar',
+      data:{labels:lbl,datasets:[
+        {label:'PBJT',data:txD.months.map(m=>txD.data[m].pbjt),backgroundColor:'rgba(184,107,0,.75)',borderRadius:6},
+        {label:'PPh UMKM',data:txD.months.map(m=>txD.data[m].pph_umkm),backgroundColor:'rgba(21,94,239,.7)',borderRadius:6}]},
+      options:{plugins:{legend:{position:'bottom',labels:{usePointStyle:true,padding:12}}},scales:{y:{ticks:{callback:v=>' '+(v/1000)+'k'}}}}});
+  }
+
+  // neraca saldo
+  if(trD2&&!trD2.error){
+    let t='<thead><tr><th>Kode</th><th>Akun</th><th style="text-align:right">Debit</th><th style="text-align:right">Kredit</th></tr></thead><tbody>';
+    for(const r of trD2.trial)
+      t+=`<tr><td><span class="kbd" style="background:var(--fd-surface-2);border:1px solid var(--fd-border);border-radius:6px;padding:1px 7px;font-size:10.5px">${r.account_code}</span></td>
+        <td>${esc(r.name)}</td>
+        <td style="text-align:right">${fmt(r.tot_debit)}</td>
+        <td style="text-align:right">${fmt(r.tot_credit)}</td></tr>`;
+    $('tblTrial').innerHTML=t+'</tbody>';
+  }
+
 async function saveTaxRule(){
   const d=await api('tax_rule_add',{name:txname.value,tax_type:txtype.value,rate_pct:+(txrate.value||0),
     business_id:txbiz.value||null,category_name:txcat.value||null,
@@ -1222,6 +1608,31 @@ async function renderReport(){
     <tr><td>Total omzet semua cabang</td><td style="text-align:right" class="pos">${fmt(s.usaha.masuk)}</td></tr>
     <tr><td>Total beban semua cabang</td><td style="text-align:right" class="neg">${fmt(s.usaha.keluar)}</td></tr>
     <tr><td><b>Laba bersih usaha</b></td><td style="text-align:right"><b class="${s.usaha.laba>=0?'pos':'neg'}">${fmt(s.usaha.laba)}</b></td></tr></tbody></table></div>`;
+  // tren 12 bulan + perbandingan bulan ini vs lalu
+  const ty=await api('trend_year');
+  if(!ty.error){
+    const yc=await api('year_compare');
+    const c=ty.compare, arrow=v=>v==null?'—':(v>=0?'📈 +':'📉 ')+v+'%';
+    const arrowY=v=>v==null?'(belum ada data tahun lalu)':(v>=0?'📈 +':'📉 ')+v+'% vs tahun lalu';
+    const lbl12=ty.months.map(m=>m.bulan.slice(5)+'/'+m.bulan.slice(2,4));
+    charts.ty?.destroy();
+    let htmlTy=`<div class="panel" style="grid-column:1/-1"><h3>📊 Tren 12 Bulan</h3>
+     <table style="min-width:0"><tbody>
+      <tr><td>Masuk bulan ini vs lalu</td><td style="text-align:right" class="${(c.delta_masuk_pct??0)>=0?'pos':'neg'}">${fmt(c.bulan_ini.masuk)} ${arrow(c.delta_masuk_pct)}</td></tr>
+      <tr><td>Keluar bulan ini vs lalu</td><td style="text-align:right" class="${(c.delta_keluar_pct??1)>0?'neg':'pos'}">${fmt(c.bulan_ini.keluar)} ${arrow(c.delta_keluar_pct)}</td></tr>
+      <tr><td>vs bulan sama tahun lalu (${yc.tahun_lalu.bulan})</td>
+        <td style="text-align:right" class="small">masuk ${fmt(yc.ini.masuk)} ${arrowY(yc.delta_masuk_pct)}<br>keluar ${fmt(yc.ini.keluar)} ${arrowY(yc.delta_keluar_pct)}</td></tr></tbody></table>
+     <canvas id="chartYear" style="margin-top:10px"></canvas></div>`;
+    $('reportCards').insertAdjacentHTML('afterend','');
+    document.getElementById('reportCards').parentElement.insertAdjacentHTML('beforeend',htmlTy);
+    const cv=document.getElementById('chartYear'); if(cv&&window.Chart){
+      charts.ty=new Chart(cv,{type:'bar',
+        data:{labels:lbl12,datasets:[
+          {label:'Masuk',data:ty.months.map(m=>m.masuk),backgroundColor:'rgba(22,131,111,.75)',borderRadius:6},
+          {label:'Keluar',data:ty.months.map(m=>m.keluar),backgroundColor:'rgba(192,57,43,.7)',borderRadius:6}]},
+        options:{plugins:{legend:{position:'bottom',labels:{usePointStyle:true,padding:14}}},scales:{x:{stacked:false},y:{ticks:{callback:v=>' '+(v/1000)+'k'}}}}});
+    }
+  }
   const labels=['Pribadi',...s.cabang.map(c=>c.name)];
   const vals=[s.pribadi.keluar,...s.cabang.map(c=>c.keluar)];
   charts.r?.destroy();
@@ -1249,6 +1660,7 @@ async function askAI(){
 
 function closeModal(){$('modal').innerHTML='';}
 $('lpass').addEventListener('keydown',e=>{if(e.key==='Enter')login();});
+if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
 boot();
 </script>
 </body>

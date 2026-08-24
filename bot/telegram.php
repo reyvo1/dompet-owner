@@ -39,9 +39,10 @@ function help_text(array $user): string {
        . "• `keluar 25000 beli beras` — catat pengeluaran\n"
        . "/hariini — laporan cabangmu hari ini\n"
        . "/rekap — rekap 7 hari\n"
-       . "/bantuan — tampilkan menu ini";
+       . "/bantuan — tampilkan menu ini\n"
+       . "/cabang — lihat cabangmu";
     if ($user['role'] === 'owner') {
-        $h .= "\n\n👑 Khusus owner:\n/kas — saldo semua kas dompet\n/laporan — laporan bulan ini semua scope";
+        $h .= "\n\n👑 Khusus owner:\n/kas — saldo semua kas dompet\n/laporan — laporan bulan ini semua scope\n/daftarcabang — daftar cabang\n/cabang username id — pindahkan kariawan";
     }
     return $h;
 }
@@ -123,6 +124,39 @@ function handle_message(array $msg): string {
     }
 
     if (preg_match('/^\/(start|bantuan|help)$/i', $text)) return help_text($user);
+    // /cabang: lihat cabang sendiri; owner: pindahkan kariawan antar cabang
+    if (strcasecmp($text, '/cabang') === 0) {
+        $bizName = null;
+        if ($user['business_id']) {
+            $stB0 = db()->prepare("SELECT name FROM businesses WHERE id=?");
+            $stB0->execute([(int)$user['business_id']]);
+            $bizName = $stB0->fetch()['name'] ?? null;
+        }
+        if ($user['role'] === 'owner') {
+            return "Kamu owner 👑 - bebas di semua cabang.\nUntuk memindahkan kariawan:\n/cabang username id_cabang\nDaftar cabang: /daftarcabang";
+        }
+        return "Kamu tergabung di: " . ($bizName ? '*' . $bizName . '*' : '(belum dipasang)') . "\nMinta bos untuk memindahmu.";
+    }
+    if (strcasecmp($text, '/daftarcabang') === 0) {
+        if ($user['role'] !== 'owner') return "Khusus owner 👑";
+        $out2 = "🏬 Daftar cabang:\n";
+        foreach (db()->query("SELECT id,name FROM businesses WHERE active=1 ORDER BY id") as $b)
+            $out2 .= "#{$b['id']} = {$b['name']}\n";
+        return $out2 . "\nPindahkan kariawan:\n/cabang username id_cabang";
+    }
+    if (preg_match('/^\/cabang\s+(\S+)\s+(\d+)$/i', $text, $cm)) {
+        if ($user['role'] !== 'owner') return "Khusus owner 👑";
+        $stU = db()->prepare("SELECT * FROM users WHERE username=? AND role='kariawan' AND active=1");
+        $stU->execute([$cm[1]]);
+        if (!$tu = $stU->fetch()) return "Kariawan *{$cm[1]}* tidak ditemukan.";
+        $stB = db()->prepare("SELECT name FROM businesses WHERE id=? AND active=1");
+        $stB->execute([(int)$cm[2]]);
+        if (!$bn = $stB->fetch()) return "Cabang #{$cm[2]} tidak ada. Lihat: /daftarcabang";
+        db()->prepare("UPDATE users SET business_id=? WHERE id=?")->execute([(int)$cm[2], $tu['id']]);
+        audit_log($user, 'bot_move_branch', "{$tu['username']} -> {$bn['name']}");
+        return "OK {$tu['display_name']} dipindahkan ke *{$bn['name']}*.";
+    }
+
     if (preg_match('/^\/hariini/i', $text)) return laporan_hari_ini($user);
     if (preg_match('/^\/rekap/i', $text)) return rekap_7_hari($user);
     if (preg_match('/^\/kas/i', $text)) {

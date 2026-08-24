@@ -22,6 +22,38 @@ $method = $_SERVER['REQUEST_METHOD'];
 $action = $_GET['action'] ?? '';
 $input = json_decode(file_get_contents('php://input'), true) ?: [];
 
+/* ---------- LAMPIRAN FOTO NOTA (upload multipart, di luar switch JSON) ---------- */
+if ($method === 'POST' && $action === 'att_upload') {
+    $u = require_login();
+    if (empty($_FILES['file']['tmp_name']) || $_FILES['file']['error'] !== UPLOAD_ERR_OK)
+        out(['error' => 'File tidak terkirim'], 422);
+    $txId = (int)($_POST['tx_id'] ?? 0);
+    if (!$txId) out(['error' => 'tx_id kurang'], 422);
+    $st = db()->prepare("SELECT id FROM transactions WHERE id=?"); $st->execute([$txId]);
+    if (!$st->fetch()) out(['error' => 'Transaksi tidak ada'], 404);
+    // validasi: hanya gambar, maks 5MB
+    if ($_FILES['file']['size'] > 5 * 1024 * 1024) out(['error' => 'Maksimal 5MB'], 422);
+    $info = @getimagesize($_FILES['file']['tmp_name']);
+    if (!$info) out(['error' => 'Hanya file gambar (jpg/png/webp)'], 422);
+    $ext = image_type_to_extension($info[2], false); // jpeg,png,webp,...
+    if (!in_array($ext, ['jpeg','png','webp'])) out(['error' => 'Format harus jpg/png/webp'], 422);
+    $dir = __DIR__ . '/public/uploads';
+    if (!is_dir($dir)) mkdir($dir, 0777, true);
+    $name = 'tx' . $txId . '_' . date('Ymd_His') . '_' . bin2hex(random_bytes(4)) . '.' . $ext;
+    if (!move_uploaded_file($_FILES['file']['tmp_name'], $dir . '/' . $name))
+        out(['error' => 'Gagal simpan file'], 500);
+    db()->prepare("INSERT INTO tx_attachments (tx_id,filename,original_name) VALUES (?,?,?)")
+        ->execute([$txId, $name, substr((string)($_FILES['file']['name'] ?? ''), 0, 255)]);
+    out(['ok' => true, 'filename' => $name]);
+}
+if ($action === 'att_list') {
+    require_login();
+    $txId = (int)($input['tx_id'] ?? $_GET['tx_id'] ?? 0);
+    $st = db()->prepare("SELECT id,filename,original_name FROM tx_attachments WHERE tx_id=? ORDER BY id");
+    $st->execute([$txId]);
+    out(['rows' => $st->fetchAll()]);
+}
+
 try {
 switch ($action) {
 
@@ -97,6 +129,11 @@ case 'tx_add_branch':
     ]);
     $biz = db()->query("SELECT name FROM businesses WHERE id={$u['business_id']}")->fetch()['name'];
     notify_owner((($type==='masuk')?'🟢 MASUK':'🔴 KELUAR')." [{$biz}]\nRp ".number_format((float)($input['amount']??0),0,',','.')."\n".trim($input['description']??'')."\nOleh: {$u['display_name']} (web)");
+    $bigLimit = (float)(cfg('big_tx_limit') ?: 1000000);
+    if ((float)($input['amount'] ?? 0) >= $bigLimit && $bigLimit > 0) {
+        notify_owner_force("⚠️ TRANSAKSI BESAR di {$biz}\nRp ".number_format((float)$input['amount'],0,',','.')."\n".
+            trim($input['description'] ?? '')." ({$u['display_name']})");
+    }
     out(['ok'=>true,'id'=>$id]);
 
 /* ---------- RINGKASAN DASHBOARD OWNER ---------- */
@@ -105,9 +142,12 @@ case 'summary':
     $period = date('Y-m');
     $kas = wallets_all();
     $pribadi = laporan_bulan($period, null);
-    // filter profil bisnis (multi-profil): biz=ID -> hanya bisnis tsb; kosong = semua
-    $bizFilter = isset($_GET['biz']) && $_GET['biz'] !== '' ? (int)$_GET['biz'] : null;
-    if ($bizFilter !== null) {
+    // filter profil bisnis (multi-profil): biz=ID -> hanya bisnis tsb; biz=pribadi -> hanya pribadi; kosong = semua
+    $bizFilter = isset($_GET['biz']) && $_GET['biz'] !== '' && $_GET['biz'] !== 'pribadi' ? (int)$_GET['biz'] : null;
+    $pribadiOnly = (($_GET['biz'] ?? '') === 'pribadi');
+    if ($pribadiOnly) {
+        $usahaMasuk = 0.0; $usahaKeluar = 0.0;
+    } else if ($bizFilter !== null) {
         $stB = db()->prepare("SELECT COALESCE(SUM(amount),0) s FROM transactions
             WHERE scope='usaha' AND type='masuk' AND business_id=? AND DATE_FORMAT(tx_date,'%Y-%m')='$period'");
         $stB->execute([$bizFilter]);
@@ -164,6 +204,12 @@ case 'summary':
 case 'tx_add':
     $u = require_login();
     if (($u['role'] ?? '') !== 'owner') out(['error' => 'Khusus owner'], 403);
+    // tutup buku: transaksi baru tidak boleh masuk periode terkunci
+    if (!empty($input['tx_date'])) {
+        $lockP = substr((string)$input['tx_date'], 0, 7);
+        if (db()->query("SELECT COUNT(*) c FROM closed_periods WHERE period='$lockP'")->fetch()['c'])
+            out(['error'=>"Periode {$lockP} sudah ditutup (terkunci)"],422);
+    }
     $biz = !empty($input['business_id']) ? (int)$input['business_id'] : null;
     $cat = null;
     if (!empty($input['category'])) {
@@ -193,7 +239,24 @@ case 'tx_add':
         'wallet_id' => !empty($input['wallet_id']) ? (int)$input['wallet_id'] : null,
         'wallet_dest_id' => !empty($input['wallet_dest_id']) ? (int)$input['wallet_dest_id'] : null,
     ]);
+    // transaksi besar -> notif khusus ke owner
+    $bigLimit = (float)(cfg('big_tx_limit') ?: 1000000);
+    if ((float)($input['amount'] ?? 0) >= $bigLimit && $bigLimit > 0) {
+        notify_owner_force("⚠️ TRANSAKSI BESAR\nRp ".number_format((float)$input['amount'],0,',','.')."\n".
+            ($input['description'] ?? '')."\n(Oleh: {$u['display_name']})");
+    }
     out(['ok' => true, 'id' => $id, 'smart' => $smartHit ? $smartHit['category'] : null]);
+
+/* ---------- GANTI PASSWORD ---------- */
+case 'change_password':
+    $u = require_login();
+    $cur = (string)($input['current'] ?? '');
+    $new = (string)($input['new'] ?? '');
+    if (!password_verify($cur, $u['password_hash'])) out(['error' => 'Password sekarang salah'], 422);
+    if (strlen($new) < 6) out(['error' => 'Password baru minimal 6 karakter'], 422);
+    db()->prepare("UPDATE users SET password_hash=? WHERE id=?")
+        ->execute([password_hash($new, PASSWORD_DEFAULT), $u['id']]);
+    out(['ok' => true]);
 
 /* ---------- SMART RULES ---------- */
 case 'rule_list':
@@ -456,6 +519,333 @@ case 'calendar':
         'today' => $today->format('Y-m-d'),
     ]);
 
+/* ---------- DETEKSI ANOMALI PENGELUARAN ---------- */
+case 'anomalies':
+    require_login();
+    $rows = [];
+    $st = db()->query("SELECT c.name cat, AVG(t.tot) avg3
+        FROM (SELECT category_id, SUM(amount) tot FROM transactions
+              WHERE type='keluar' AND category_id IS NOT NULL
+              AND DATE_FORMAT(tx_date,'%Y-%m') BETWEEN DATE_FORMAT(DATE_SUB(CURDATE(), INTERVAL 3 MONTH),'%Y-%m')
+                  AND DATE_FORMAT(DATE_SUB(CURDATE(), INTERVAL 1 MONTH),'%Y-%m')
+              GROUP BY category_id, DATE_FORMAT(tx_date,'%Y-%m')) t
+        JOIN categories c ON c.id=t.category_id
+        GROUP BY c.name HAVING avg3 > 0");
+    $avg = [];
+    foreach ($st as $r) $avg[$r['cat']] = (float)$r['avg3'];
+    if ($avg) {
+        $in = implode(',', array_fill(0, count($avg), '?'));
+        $st3 = db()->prepare("SELECT c.name cat, t.tx_date, t.amount, t.description FROM transactions t
+            JOIN categories c ON c.id=t.category_id
+            WHERE t.type='keluar' AND c.name IN ($in)
+            AND DATE_FORMAT(t.tx_date,'%Y-%m')=DATE_FORMAT(CURDATE(),'%Y-%m')
+            ORDER BY t.amount DESC LIMIT 100");
+        $st3->execute(array_keys($avg));
+        foreach ($st3 as $r) {
+            $base = $avg[$r['cat']];
+            if ((float)$r['amount'] >= $base * 2 && (float)$r['amount'] >= 50000) {
+                $rows[] = ['cat'=>$r['cat'],'tx_date'=>$r['tx_date'],'amount'=>(float)$r['amount'],
+                    'description'=>$r['description'],'multiple'=>round((float)$r['amount']/$base,1)];
+            }
+        }
+    }
+    out(['rows' => array_slice($rows, 0, 5)]);
+
+/* ---------- PROYEKSI ARUS KAS 30 HARI ---------- */
+case 'cashflow_forecast':
+    require_login();
+    $kas = total_kas();
+    $in = (float)db()->query("SELECT COALESCE(SUM(amount),0) s FROM transactions WHERE type='masuk'
+        AND tx_date >= DATE_SUB(CURDATE(), INTERVAL 90 DAY)")->fetch()['s'] / 90;
+    $out = (float)db()->query("SELECT COALESCE(SUM(amount),0) s FROM transactions WHERE type='keluar'
+        AND tx_date >= DATE_SUB(CURDATE(), INTERVAL 90 DAY)")->fetch()['s'] / 90;
+    $bills = (float)db()->query("SELECT COALESCE(SUM(amount),0) s FROM bills WHERE active=1")->fetch()['s'];
+    $net = $in - $out;
+    out(['kas_now'=>$kas,
+         'daily_in'=>round($in), 'daily_out'=>round($out),
+         'proj_30d'=>round($kas + $net*30 - min($bills, max(0,$net*30))),
+         'optimis_30d'=>round($kas + max(0,$net)*30),
+         'pesimis_30d'=>round($kas - ($out*30) + ($in*30*0.6)),
+         'monthly_bills'=>$bills]);
+
+/* ---------- HEAD-TO-HEAD ANTAR CABANG ---------- */
+case 'branch_rank':
+    require_login();
+    $period = date('Y-m');
+    $list = [];
+    foreach (db()->query("SELECT * FROM businesses WHERE active=1") as $b) {
+        $l = laporan_bulan($period, (int)$b['id']);
+        $l['id']=(int)$b['id']; $l['name']=$b['name']; $l['icon']=$b['icon'];
+        $l['margin'] = $l['masuk']>0 ? round($l['laba']/$l['masuk']*100) : null;
+        $list[] = $l;
+    }
+    usort($list, fn($a,$b2) => $b2['laba'] <=> $a['laba']);
+    out(['period'=>$period,'ranking'=>$list]);
+
+/* ---------- APPROVAL FLOW ---------- */
+case 'appr_list':
+    require_login();
+    $st = db()->prepare("SELECT a.*, u.display_name requester, b.name biz FROM approvals a
+        LEFT JOIN users u ON u.id=a.user_id LEFT JOIN businesses b ON b.id=a.business_id
+        WHERE a.status='pending' ORDER BY a.created_at DESC");
+    $st->execute();
+    out(['rows'=>$st->fetchAll()]);
+
+case 'appr_request':
+    $u = require_login();
+    if (($u['role'] ?? '') === 'owner' || !$u['business_id'])
+        out(['error'=>'Approval khusus kariawan cabang'],422);
+    $id = db()->prepare("INSERT INTO approvals (user_id,business_id,type,amount,description) VALUES (?,?,?,?,?)");
+    $id->execute([$u['id'],$u['business_id'],
+        ($input['type']??'')==='masuk'?'masuk':'keluar',
+        (float)($input['amount']??0), trim($input['description']??'')]);
+    notify_owner_force("PERMINTAAN PERSETUJUAN\nRp ".number_format((float)($input['amount']??0),0,',','.').
+        "\n".trim($input['description']??'')."\nOleh: {$u['display_name']}\nBuka dashboard -> Persetujuan");
+    audit_log($u,'appr_request','Rp '.($input['amount']??0).' '.($input['description']??''));
+    out(['ok'=>true,'id'=>(int)db()->lastInsertId()]);
+
+case 'appr_decide':
+    $u = require_login();
+    if (($u['role'] ?? '') !== 'owner') out(['error' => 'Khusus owner'], 403);
+    $id=(int)($input['id']??0); $ok=($input['decision']??'')==='approve';
+    $st=db()->prepare("SELECT a.*, us.display_name FROM approvals a LEFT JOIN users us ON us.id=a.user_id WHERE a.id=? AND a.status='pending'");
+    $st->execute([$id]);
+    if(!$ap=$st->fetch()) out(['error'=>'Permintaan tidak ada / sudah diputuskan'],404);
+    if($ok){
+        $bizId=$ap['business_id']?(int)$ap['business_id']:null;
+        $txId=add_transaction(['type'=>$ap['type'],'amount'=>(float)$ap['amount'],
+            'description'=>$ap['description'].' [disetujui]','source'=>'approval',
+            'user_id'=>$ap['user_id'],'business_id'=>$bizId,
+            'scope'=>$bizId?'usaha':'pribadi']);
+        db()->prepare("UPDATE approvals SET status='approved',decided_by=?,decided_at=NOW(),tx_id=? WHERE id=?")
+            ->execute([$u['id'],$txId,$id]);
+    } else {
+        db()->prepare("UPDATE approvals SET status='rejected',decided_by=?,decided_at=NOW() WHERE id=?")
+            ->execute([$u['id'],$id]);
+    }
+    audit_log($u,'appr_decide',"#{$id} ".($ok?'approved':'rejected'));
+    out(['ok'=>true]);
+
+/* ---------- AUDIT LOG ---------- */
+case 'audit_log_list':
+    require_login();
+    $u = require_login();
+    if (($u['role'] ?? '') !== 'owner') out(['error' => 'Khusus owner'], 403);
+    $limit = min(max((int)($_GET['limit'] ?? 50), 1), 200);
+    out(['rows'=>db()->query("SELECT * FROM audit_log ORDER BY id DESC LIMIT $limit")->fetchAll()]);
+
+/* ---------- KOMPARASI ANTAR TAHUN ---------- */
+case 'year_compare':
+    require_login();
+    $cur = date('Y-m');
+    $prev = date('Y-m', strtotime('-1 year'));
+    $get = function($m) {
+        $in = (float)db()->query("SELECT COALESCE(SUM(amount),0) s FROM transactions WHERE type='masuk' AND DATE_FORMAT(tx_date,'%Y-%m')='$m'")->fetch()['s'];
+        $out = (float)db()->query("SELECT COALESCE(SUM(amount),0) s FROM transactions WHERE type='keluar' AND DATE_FORMAT(tx_date,'%Y-%m')='$m'")->fetch()['s'];
+        $n = (int)db()->query("SELECT COUNT(*) c FROM transactions WHERE DATE_FORMAT(tx_date,'%Y-%m')='$m'")->fetch()['c'];
+        return ['bulan'=>$m,'masuk'=>$in,'keluar'=>$out,'n'=>$n];
+    };
+    $a=$get($cur); $b=$get($prev);
+    out(['ini'=>$a,'tahun_lalu'=>$b,
+         'delta_masuk_pct'=>$b['masuk']>0?round(($a['masuk']-$b['masuk'])/$b['masuk']*100):null,
+         'delta_keluar_pct'=>$b['keluar']>0?round(($a['keluar']-$b['keluar'])/$b['keluar']*100):null]);
+
+/* ---------- TUTUP BUKU BULANAN ---------- */
+case 'closed_periods':
+    require_login();
+    out(['rows'=>db()->query("SELECT * FROM closed_periods ORDER BY period DESC")->fetchAll()]);
+
+case 'close_book':
+    $u = require_login();
+    if (($u['role'] ?? '') !== 'owner') out(['error' => 'Khusus owner'], 403);
+    $period = trim($input['period'] ?? '');
+    if (!preg_match('/^\d{4}-\d{2}$/', $period)) out(['error'=>'Format periode YYYY-MM'],422);
+    if ($period === date('Y-m')) out(['error'=>'Bulan berjalan belum bisa ditutup'],422);
+    try {
+        db()->prepare("INSERT INTO closed_periods (period,closed_by) VALUES (?,?)")->execute([$period,$u['id']]);
+        audit_log($u,'close_book',$period);
+        out(['ok'=>true]);
+    } catch (PDOException $e) {
+        out(['error'=>'Periode itu sudah dikunci'],422);
+    }
+
+case 'reopen_book':
+    $u = require_login();
+    if (($u['role'] ?? '') !== 'owner') out(['error' => 'Khusus owner'], 403);
+    db()->prepare("DELETE FROM closed_periods WHERE period=?")->execute([trim($input['period']??'')]);
+    audit_log($u,'reopen_book',(string)($input['period']??''));
+    out(['ok'=>true]);
+
+/* ---------- STOK BARANG ---------- */
+case 'prod_list':
+    require_login();
+    $biz = !empty($_GET['business_id']) ? (int)$_GET['business_id'] : null;
+    if ($biz) {
+        $st = db()->prepare("SELECT p.*, b.name biz FROM products p LEFT JOIN businesses b ON b.id=p.business_id
+            WHERE p.active=1 AND p.business_id=? ORDER BY p.name");
+        $st->execute([$biz]);
+    } else {
+        $st = db()->prepare("SELECT p.*, b.name biz FROM products p LEFT JOIN businesses b ON b.id=p.business_id
+            WHERE p.active=1 ORDER BY p.name");
+        $st->execute();
+    }
+    out(['rows'=>$st->fetchAll()]);
+
+case 'prod_save':
+    $u = require_login();
+    if (($u['role'] ?? '') !== 'owner') out(['error' => 'Khusus owner'], 403);
+    $name=trim($input['name']??'');
+    if($name==='') out(['error'=>'Nama barang wajib'],422);
+    $vals=[trim($input['sku']??'') ?: null, trim($input['unit']??'pcs'),
+        (float)($input['cost_price']??0),(float)($input['sell_price']??0),
+        (float)($input['stock']??0),(float)($input['min_stock']??0),
+        !empty($input['business_id'])?(int)$input['business_id']:null,$name];
+    if(!empty($input['id'])){
+        db()->prepare("UPDATE products SET sku=?,unit=?,cost_price=?,sell_price=?,stock=?,min_stock=?,business_id=? WHERE id=?")
+            ->execute([...$vals, (int)$input['id']]);
+        audit_log($u,'prod_update',$name);
+        out(['ok'=>true,'id'=>(int)$input['id']]);
+    }
+    db()->prepare("INSERT INTO products (sku,unit,cost_price,sell_price,stock,min_stock,business_id,name) VALUES (?,?,?,?,?,?,?,?)")
+        ->execute($vals);
+    audit_log($u,'prod_add',$name);
+    out(['ok'=>true,'id'=>(int)db()->lastInsertId()]);
+
+case 'prod_delete':
+    $u = require_login();
+    if (($u['role'] ?? '') !== 'owner') out(['error' => 'Khusus owner'], 403);
+    db()->prepare("UPDATE products SET active=0 WHERE id=?")->execute([(int)($input['id']??0)]);
+    audit_log($u,'prod_delete','product #'.(int)($input['id']??0));
+    out(['ok'=>true]);
+
+// stok masuk/keluar manual; keluar otomatis jadi transaksi keluar (HPP)
+case 'stock_move':
+    $u = require_login();
+    if (($u['role'] ?? '') !== 'owner') out(['error' => 'Khusus owner'], 403);
+    $pid=(int)($input['product_id']??0);
+    $qty=(float)($input['qty']??0);
+    if(!$pid||$qty<=0) out(['error'=>'Data kurang'],422);
+    $dir=($input['direction']??'in')==='out'?'out':'in';
+    $st=db()->prepare("SELECT * FROM products WHERE id=?");$st->execute([$pid]);
+    if(!$pr=$st->fetch()) out(['error'=>'Barang tidak ada'],404);
+    if($dir==='out' && (float)$pr['stock'] < $qty) out(['error'=>'Stok tidak cukup ('.$pr['stock'].' '.$pr['unit'].')'],422);
+    $delta=$dir==='in'?$qty:-$qty;
+    db()->prepare("UPDATE products SET stock=stock+? WHERE id=?")->execute([$delta,$pid]);
+    $txId=null;
+    if(!empty($input['make_transaction'])){
+        $amount = $dir==='in' ? $qty*(float)$pr['cost_price'] : $qty*(float)$pr['sell_price'];
+        if($amount>0){
+            $txId=add_transaction(['type'=>($dir==='in'?'keluar':'masuk'),'amount'=>$amount,
+                'description'=>(($dir==='in'?'Beli stok: ':'Jual: ').$pr['name']." x$qty"),
+                'source'=>'owner','user_id'=>$u['id'],
+                'business_id'=>$pr['business_id']?(int)$pr['business_id']:null,
+                'scope'=>$pr['business_id']?'usaha':'pribadi']);
+            db()->prepare("UPDATE stock_moves SET tx_id=? WHERE id=?")->execute([$txId, db()->lastInsertId()]);
+        }
+    }
+    db()->prepare("INSERT INTO stock_moves (product_id,tx_id,direction,qty,note) VALUES (?,?,?,?,?)")
+        ->execute([$pid,$txId,$dir,$qty,trim($input['note']??'')]);
+    audit_log($u,'stock_move',"$dir $qty {$pr['name']}");
+    out(['ok'=>true]);
+
+/* ---------- INVOICE / KWITANSI ---------- */
+case 'inv_list':
+    require_login();
+    out(['rows'=>db()->query("SELECT i.*, b.name biz FROM invoices i LEFT JOIN businesses b ON b.id=i.business_id
+        ORDER BY i.id DESC LIMIT 100")->fetchAll()]);
+
+case 'inv_create':
+    $u = require_login();
+    if (($u['role'] ?? '') !== 'owner') out(['error' => 'Khusus owner'], 403);
+    $cust=trim($input['customer_name']??'');
+    $amt=(float)($input['amount']??0);
+    if($cust===''||$amt<=0) out(['error'=>'Nama pelanggan & nominal wajib'],422);
+    $number='INV/'.date('Ymd').'/'.strtoupper(bin2hex(random_bytes(2)));
+    db()->prepare("INSERT INTO invoices (business_id,number,customer_name,amount,description) VALUES (?,?,?,?,?)")
+        ->execute([!empty($input['business_id'])?(int)$input['business_id']:null,
+            $number,$cust,$amt,trim($input['description']??'')]);
+    audit_log($u,'inv_create',$number.' '.$cust.' Rp'.$amt);
+    out(['ok'=>true,'id'=>(int)db()->lastInsertId(),'number'=>$number]);
+
+case 'inv_pay':
+    $u = require_login();
+    if (($u['role'] ?? '') !== 'owner') out(['error' => 'Khusus owner'], 403);
+    $id=(int)($input['id']??0);
+    $st=db()->prepare("SELECT * FROM invoices WHERE id=? AND status='unpaid'");$st->execute([$id]);
+    if(!$inv=$st->fetch()) out(['error'=>'Invoice tidak ada / sudah lunas'],404);
+    $bizId=$inv['business_id']?(int)$inv['business_id']:null;
+    $txId=add_transaction(['type'=>'masuk','amount'=>(float)$inv['amount'],
+        'description'=>'[INV '.$inv['number'].'] Pelunasan '.$inv['customer_name'],
+        'source'=>'owner','user_id'=>$u['id'],'business_id'=>$bizId,
+        'scope'=>$bizId?'usaha':'pribadi']);
+    db()->prepare("UPDATE invoices SET status='paid',paid_at=NOW(),tx_id=? WHERE id=?")->execute([$txId,$id]);
+    audit_log($u,'inv_pay',$inv['number']);
+    notify_owner_force("PEMBAYARAN DITERIMA\n".$inv['number']." - ".$inv['customer_name']."\nRp ".number_format((float)$inv['amount'],0,',','.'));
+    out(['ok'=>true]);
+
+/* ---------- HEALTH CHECK (tanpa login, tanpa data sensitif) ---------- */
+case 'health':
+    try {
+        db()->query("SELECT 1");
+        $nTx = (int)db()->query("SELECT COUNT(*) c FROM transactions")->fetch()['c'];
+        out(['ok'=>true,'db'=>'up','transactions'=>$nTx,'time'=>date('c')]);
+    } catch (Throwable $e) {
+        out(['ok'=>false,'db'=>'down'], 500);
+    }
+
+/* ---------- PENCARIAN GLOBAL ---------- */
+case 'global_search':
+    require_login();
+    $q = trim((string)($input['q'] ?? $_GET['q'] ?? ''));
+    if (mb_strlen($q) < 2) out(['transactions'=>[],'categories'=>[],'businesses'=>[]]);
+    $like = '%'.$q.'%';
+    $st = db()->prepare("SELECT t.id,t.tx_date,t.type,t.amount,t.description,b.name biz
+        FROM transactions t LEFT JOIN businesses b ON b.id=t.business_id
+        WHERE t.description LIKE ? ORDER BY t.tx_date DESC LIMIT 8");
+    $st->execute([$like]);
+    $txs = $st->fetchAll();
+    $cats = db()->prepare("SELECT id,name,color FROM categories WHERE name LIKE ? LIMIT 5");
+    $cats->execute([$like]); 
+    $cRows=[]; foreach ($cats->fetchAll() as $r) { $cRows[]=['id'=>$r['id'],'name'=>$r['name'],'color'=>$r['color']]; }
+    $biz = db()->prepare("SELECT id,name,icon FROM businesses WHERE name LIKE ? AND active=1 LIMIT 5");
+    $biz->execute([$like]);
+    out(['transactions'=>$txs,'categories'=>$cRows,
+         'businesses'=>$biz->fetchAll()]);
+
+/* ---------- RINGKASAN PAJAK (grafik) ---------- */
+case 'tax_summary':
+    require_login();
+    $months = [];
+    for ($i = 5; $i >= 0; $i--) $months[] = date('Y-m', strtotime("-$i months"));
+    $rows = [];
+    foreach ($months as $m) {
+        foreach (['pbjt','pph_umkm'] as $t) {
+            $st = db()->prepare("SELECT COALESCE(SUM(l.tax_amount),0) s FROM tax_lines l
+                JOIN transactions t2 ON t2.id=l.tx_id WHERE l.tax_type=? AND DATE_FORMAT(t2.tx_date,'%Y-%m')=?");
+            $st->execute([$t, $m]);
+            $rows[$m][$t] = (float)$st->fetch()['s'];
+        }
+    }
+    out(['months' => $months, 'data' => $rows,
+         'total_pbjt' => array_sum(array_column($rows,'pbjt')),
+         'total_pph' => array_sum(array_column($rows,'pph_umkm'))]);
+
+/* ---------- TREN 12 BULAN + PERBANDINGAN ---------- */
+case 'trend_year':
+    require_login();
+    $months = [];
+    for ($i = 11; $i >= 0; $i--) {
+        $m = date('Y-m', strtotime("-$i months"));
+        $in = (float)db()->query("SELECT COALESCE(SUM(amount),0) s FROM transactions WHERE type='masuk' AND DATE_FORMAT(tx_date,'%Y-%m')='$m'")->fetch()['s'];
+        $out = (float)db()->query("SELECT COALESCE(SUM(amount),0) s FROM transactions WHERE type='keluar' AND DATE_FORMAT(tx_date,'%Y-%m')='$m'")->fetch()['s'];
+        $months[] = ['bulan'=>$m,'masuk'=>$in,'keluar'=>$out];
+    }
+    $cur = $months[11]; $prev = $months[10] ?? ['bulan'=>'','masuk'=>0,'keluar'=>0];
+    out(['months'=>$months,
+         'compare'=>['bulan_ini'=>$cur,'bulan_lalu'=>$prev,
+            'delta_masuk_pct'=>$prev['masuk']>0?round(($cur['masuk']-$prev['masuk'])/$prev['masuk']*100):null,
+            'delta_keluar_pct'=>$prev['keluar']>0?round(($cur['keluar']-$prev['keluar'])/$prev['keluar']*100):null]]);
+
 /* ---------- MASTER DATA ---------- */
 case 'meta':
     require_login();
@@ -480,10 +870,41 @@ case 'tx_list':
     if (!empty($input['from'])) { $sql .= " AND t.tx_date>=?"; $a[] = $input['from']; }
     if (!empty($input['to'])) { $sql .= " AND t.tx_date<=?"; $a[] = $input['to']; }
     if (!empty($input['q'])) { $sql .= " AND t.description LIKE ?"; $a[] = '%'.$input['q'].'%'; }
+    if (!empty($input['category'])) { $sql .= " AND c.name=?"; $a[] = $input['category']; }
+    if (!empty($input['min_amount'])) { $sql .= " AND t.amount>=?"; $a[] = (float)$input['min_amount']; }
+    if (!empty($input['max_amount'])) { $sql .= " AND t.amount<=?"; $a[] = (float)$input['max_amount']; }
+    if (!empty($input['wallet_id'])) { $sql .= " AND (t.wallet_id=? OR t.wallet_dest_id=?)"; $a[] = (int)$input['wallet_id']; $a[] = (int)$input['wallet_id']; }
+    // sorting
+    $sortMap = ['date'=>'t.tx_date','amount'=>'t.amount'];
+    $dirMap  = ['asc'=>'ASC','desc'=>'DESC'];
+    $sortCol = $sortMap[$input['sort'] ?? 'date'] ?? 't.tx_date';
+    $sortDir = $dirMap[strtolower($input['dir'] ?? 'desc')] ?? 'DESC';
+    // pagination
+    $page = max(1, (int)($input['page'] ?? 1));
     $limit = min(max((int)($input['limit'] ?? 100), 1), 500);
-    $sql .= " ORDER BY t.tx_date DESC, t.id DESC LIMIT $limit";
+    $offset = ($page - 1) * $limit;
+    // total count utk info halaman (sebelum LIMIT)
+    // total count utk info halaman: bangun WHERE clause terpisah
+    $where = '';
+    $aw = [];
+    if (!empty($input['scope'])) { $where .= " AND t.scope=?"; $aw[] = $input['scope']; }
+    if (!empty($input['business_id'])) { $where .= " AND t.business_id=?"; $aw[] = (int)$input['business_id']; }
+    if (!empty($input['type'])) { $where .= " AND t.type=?"; $aw[] = $input['type']; }
+    if (!empty($input['from'])) { $where .= " AND t.tx_date>=?"; $aw[] = $input['from']; }
+    if (!empty($input['to'])) { $where .= " AND t.tx_date<=?"; $aw[] = $input['to']; }
+    if (!empty($input['q'])) { $where .= " AND t.description LIKE ?"; $aw[] = '%'.$input['q'].'%'; }
+    if (!empty($input['category'])) { $where .= " AND c.name=?"; $aw[] = $input['category']; }
+    if (!empty($input['min_amount'])) { $where .= " AND t.amount>=?"; $aw[] = (float)$input['min_amount']; }
+    if (!empty($input['max_amount'])) { $where .= " AND t.amount<=?"; $aw[] = (float)$input['max_amount']; }
+    if (!empty($input['wallet_id'])) { $where .= " AND (t.wallet_id=? OR t.wallet_dest_id=?)"; $aw[] = (int)$input['wallet_id']; $aw[] = (int)$input['wallet_id']; }
+    $stC = db()->prepare("SELECT COUNT(*) c FROM transactions t
+        LEFT JOIN categories c ON c.id=t.category_id WHERE 1=1$where");
+    $stC->execute($aw);
+    $total = (int)$stC->fetch()['c'];
+    $sql .= " ORDER BY $sortCol $sortDir, t.id DESC LIMIT $limit OFFSET $offset";
     $st = db()->prepare($sql); $st->execute($a);
-    out(['rows' => $st->fetchAll()]);
+    out(['rows' => $st->fetchAll(), 'total' => $total, 'page' => $page,
+         'pages' => (int)ceil($total / $limit), 'limit' => $limit]);
 
 /* ---------- BILLS (tagihan rutin + autopay) ---------- */
 case 'bills':
@@ -526,6 +947,7 @@ case 'bill_delete':
     $u = require_login();
     if (($u['role'] ?? '') !== 'owner') out(['error' => 'Khusus owner'], 403);
     db()->prepare("UPDATE bills SET active=0 WHERE id=?")->execute([(int)($input['id']??0)]);
+    audit_log($u,'bill_delete','bill #'.(int)($input['id']??0).' dinonaktifkan');
     out(['ok'=>true]);
 
 /* ---------- GOALS (target tabungan / dana darurat) ---------- */
@@ -674,12 +1096,13 @@ case 'settings_get':
         'gemini_key_set' => cfg('gemini_key') !== '',
         'notify_transactions' => cfg('notify_transactions','1'),
         'notify_bills' => cfg('notify_bills','1'),
+        'big_tx_limit' => cfg('big_tx_limit','1000000'),
     ]);
 
 case 'settings_set':
     $u = require_login();
     if (($u['role'] ?? '') !== 'owner') out(['error' => 'Khusus owner'], 403);
-    $allowed = ['bot_token','owner_chat_id','gemini_key','notify_transactions','notify_bills'];
+    $allowed = ['bot_token','owner_chat_id','gemini_key','notify_transactions','notify_bills','big_tx_limit'];
     foreach ($allowed as $k) {
         if (array_key_exists($k, $input)) {
             if ($input[$k] === '' || strpos((string)$input[$k],'••••') !== false) continue; // jangan timpa dgn mask
@@ -762,10 +1185,12 @@ case 'export_csv':
     if (!empty($input['from'])) { $sql .= " AND t.tx_date>=?"; $a[]=$input['from']; }
     if (!empty($input['to'])) { $sql .= " AND t.tx_date<=?"; $a[]=$input['to']; }
     if (!empty($input['scope'])) { $sql .= " AND t.scope=?"; $a[]=$input['scope']; }
+    if (!empty($input['business_id'])) { $sql .= " AND t.business_id=?"; $a[]=(int)$input['business_id']; }
     $sql .= " ORDER BY t.tx_date, t.id";
     $st = db()->prepare($sql); $st->execute($a);
     header('Content-Type: text/csv; charset=UTF-8');
-    header('Content-Disposition: attachment; filename=dompet-owner-'.date('Ymd').'.csv');
+    $suffix = !empty($input['business_id']) ? '-cabang'.(int)$input['business_id'] : '';
+    header('Content-Disposition: attachment; filename=dompet-owner-'.date('Ymd').$suffix.'.csv');
     echo "\xEF\xBB\xBF"; // BOM agar Excel baca UTF-8
     $out = fopen('php://output','w');
     $hdr = ['Tanggal','Jenis','Nominal','Keterangan','Scope','Cabang','Kategori','Kas','Oleh'];
@@ -892,6 +1317,10 @@ case 'tx_delete':
     $u = require_login();
     if (($u['role'] ?? '') !== 'owner') out(['error' => 'Khusus owner'], 403);
     $id = (int)($input['id'] ?? 0);
+    // larang hapus transaksi dari periode terkunci
+    $stL = db()->prepare("SELECT COUNT(*) c FROM closed_periods WHERE period=(SELECT DATE_FORMAT(tx_date,'%Y-%m') FROM transactions WHERE id=?)");
+    $stL->execute([$id]);
+    if ($stL->fetch()['c']) out(['error'=>'Periode itu sudah ditutup - transaksi terkunci'],422);
     $pdo = db();
     $pdo->beginTransaction();
     $st = $pdo->prepare("SELECT * FROM transactions WHERE id=? FOR UPDATE");
@@ -907,6 +1336,7 @@ case 'tx_delete':
     }
     $pdo->prepare("DELETE FROM transactions WHERE id=?")->execute([$id]);
     $pdo->commit();
+    audit_log($u,'tx_delete',"tx #{$id} ({$t['type']} {$t['amount']}) '{$t['description']}'");
     out(['ok' => true]);
 
 case 'backup_run':
@@ -971,6 +1401,7 @@ case 'cat_delete':
 default:
     out(['error' => 'Action tidak dikenal'], 400);
 }
+
 } catch (InvalidArgumentException $e) {
     out(['error' => $e->getMessage()], 422);
 } catch (Throwable $e) {

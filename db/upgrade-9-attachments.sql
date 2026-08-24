@@ -1,0 +1,9 @@
+-- UPGRADE 9: lampiran foto nota pada transaksi
+CREATE TABLE IF NOT EXISTS tx_attachments (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  tx_id BIGINT UNSIGNED NOT NULL,
+  filename VARCHAR(255) NOT NULL,
+  original_name VARCHAR(255) NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_att_tx FOREIGN KEY (tx_id) REFERENCES transactions(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

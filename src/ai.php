@@ -29,6 +29,20 @@ function finance_context(): string {
         WHERE type='keluar' AND DATE_FORMAT(tx_date,'%Y-%m')='$period'
         GROUP BY description, business_id ORDER BY s DESC LIMIT 5");
     foreach ($st as $r) $out .= "Pengeluaran besar: {$r['description']} Rp " . number_format((float)$r['s'], 0, ',', '.') . "\n";
+    // tren 6 bulan (untuk pertanyaan arah/tren)
+    $out .= "Tren 6 bulan terakhir (bulan: masuk/keluar): ";
+    for ($i = 5; $i >= 0; $i--) {
+        $m = date('Y-m', strtotime("-$i months"));
+        $mi = (float)db()->query("SELECT COALESCE(SUM(amount),0) s FROM transactions WHERE type='masuk' AND DATE_FORMAT(tx_date,'%Y-%m')='$m'")->fetch()['s'];
+        $mo = (float)db()->query("SELECT COALESCE(SUM(amount),0) s FROM transactions WHERE type='keluar' AND DATE_FORMAT(tx_date,'%Y-%m')='$m'")->fetch()['s'];
+        $out .= $m . ": Rp" . number_format($mi,0,',','.') . "/" . number_format($mo,0,',','.') . "; ";
+    }
+    $out .= "\n";
+    // proyeksi 30 hari
+    $in90 = (float)db()->query("SELECT COALESCE(SUM(amount),0) s FROM transactions WHERE type='masuk' AND tx_date >= DATE_SUB(CURDATE(), INTERVAL 90 DAY)")->fetch()['s'] / 90;
+    $out90 = (float)db()->query("SELECT COALESCE(SUM(amount),0) s FROM transactions WHERE type='keluar' AND tx_date >= DATE_SUB(CURDATE(), INTERVAL 90 DAY)")->fetch()['s'] / 90;
+    $proj = $kas + ($in90 - $out90) * 30;
+    $out .= "Proyeksi kas 30 hari ke depan (ritme 90 hari): sekitar Rp " . number_format($proj, 0, ',', '.') . "\n";
     return $out;
 }
 
