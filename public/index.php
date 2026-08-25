@@ -48,6 +48,7 @@
     <button class="nav-item owner-only" data-p="invoice"><span class="ic">🧾</span>Kwitansi</button>
         <button class="nav-item owner-only" data-p="appr"><span class="ic">🔔</span>Persetujuan</button>
     <button class="nav-item owner-only" data-p="audit"><span class="ic">📜</span>Audit Log</button>
+    <button class="nav-item owner-only" data-p="panduan"><span class="ic">🧭</span>Panduan</button>
     <button class="nav-item" data-p="pengaturan"><span class="ic">⚙️</span>Pengaturan</button>
     <div class="sidebar-health">Status sistem<br><b>● Semua normal</b></div>
   </aside>
@@ -220,8 +221,27 @@
 
     <!-- AUDIT LOG -->
     <section id="p-audit" style="display:none">
-      <div class="page-title" style="margin-bottom:18px"><h2>Riwayat Audit</h2><p>Siapa melakukan apa — aktivitas terakhir</p></div>
+      <div class="page-title" style="margin-bottom:18px"><h2>Riwayat Audit</h2><p>Siapa melakukan apa — lengkap dengan nilai sebelum &amp; sesudah</p></div>
       <div class="panel table-card"><div class="data-table-wrap"><table id="tblAudit"></table></div></div>
+    </section>
+
+    <!-- PANDUAN -->
+    <section id="p-panduan" style="display:none">
+      <div class="page-title" style="margin-bottom:18px"><h2>Panduan Cepat</h2><p>Langkah pertama memakai Dompet Owner</p></div>
+      <div class="grid g2">
+        <div class="panel"><h3 style="margin-bottom:10px">1️⃣ Isi Pengaturan</h3>
+          <p class="small" style="line-height:1.8">Buka <strong>Pengaturan</strong> → isi token bot Telegram (dari @BotFather), Chat ID kamu, dan kunci Gemini. Tekan tombol tes sampai hijau.</p></div>
+        <div class="panel"><h3 style="margin-bottom:10px">2️⃣ Buat Kas &amp; Kategori</h3>
+          <p class="small" style="line-height:1.8">Di <strong>Rekening &amp; Kas</strong>, daftarkan dompet/kas fisik. Kategori pengeluaran bisa diatur di Pengaturan → Kategori.</p></div>
+        <div class="panel"><h3 style="margin-bottom:10px">3️⃣ Tambah Cabang &amp; Tim</h3>
+          <p class="small" style="line-height:1.8">Di <strong>Cabang &amp; Tim</strong>: tambah cabang, lalu akun untuk kariawan (role <em>kariawan</em>) dan pembantu setia (role <em>manajer</em> — bisa menyetujui pengeluaran cabangnya). Bagikan kode login bot ke mereka.</p></div>
+        <div class="panel"><h3 style="margin-bottom:10px">4️⃣ Catat &amp; Bagikan Struk</h3>
+          <p class="small" style="line-height:1.8">Setiap transaksi otomatis mendapat <strong>No. Referensi unik</strong>. Klik ikon 🔗 di tabel transaksi untuk menyalin link struk digital — bisa dibuka siapa pun tanpa login, read-only.</p></div>
+        <div class="panel"><h3 style="margin-bottom:10px">5️⃣ Pantau Audit</h3>
+          <p class="small" style="line-height:1.8">Menu <strong>Audit Log</strong> mencatat siapa input/menghapus apa, lengkap nilai sebelum-sesudah. Transaksi terhapus tidak hilang dari riwayat.</p></div>
+        <div class="panel"><h3 style="margin-bottom:10px">6️⃣ Tutup Buku Tiap Bulan</h3>
+          <p class="small" style="line-height:1.8">Setelah laporan bulanan dicek, gunakan <strong>Tutup Buku</strong> (di Pengaturan) agar periode terkunci — angka historis tidak bisa diubah orang.</p></div>
+      </div>
     </section>
 
     <!-- PENGATURAN -->
@@ -401,6 +421,7 @@ async function boot(){
   $('loginView').style.display='none';$('appView').style.display='flex';
   $('todayStr').textContent=new Date().toLocaleDateString('id-ID',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
   if(ME.role==='kariawan'){ setupKariawan(); return; }
+  if(ME.role==='manajer'){ setupManajer(); return; }
   [meta,summary]=await Promise.all([api('meta'),api('summary',null,summaryQ())]);
   if(summary.error)return;
   fillBizSelect();fillBizSwitcher();applyThemeCharts();renderPage();
@@ -411,6 +432,19 @@ function setupKariawan(){
   // sembunyikan menu khusus owner
   ['tagihan','target','anggaran','berulang','kas','cabang','laporan','pengaturan'].forEach(p=>{
     const b=document.querySelector(`.nav-item[data-p="${p}"]`); if(b)b.style.display='none';});
+  document.querySelector('.nav-item[data-p="transaksi"] .ic').textContent='🏪';
+  document.querySelector('.nav-item[data-p="transaksi"]').lastChild.textContent=' Cabang Saya';
+  applyThemeCharts();
+  renderPage();
+}
+/* ===== MODE MANAJER: cabangnya + approval + audit ringan ===== */
+function setupManajer(){
+  // tanpa akses owner-only & pengaturan
+  ['stok','invoice','audit','cabang','pengaturan','kas'].forEach(p=>{
+    const b=document.querySelector(`.nav-item[data-p="${p}"]`); if(b)b.style.display='none';});
+  // tampilkan approval (sudah difilter per cabang di backend)
+  document.querySelector('.nav-item[data-p="appr"]').classList.remove('owner-only');
+  document.querySelector('.nav-item[data-p="appr"]').style.display='';
   document.querySelector('.nav-item[data-p="transaksi"] .ic').textContent='🏪';
   document.querySelector('.nav-item[data-p="transaksi"]').lastChild.textContent=' Cabang Saya';
   applyThemeCharts();
@@ -506,14 +540,14 @@ document.querySelectorAll('.nav-item').forEach(b=>b.addEventListener('click',()=
   renderPage();
 }));
 function renderPage(){
-  document.querySelectorAll('.nav-item.owner-only').forEach(b=>b.style.display=(ME&&ME.role==='owner')?'':'none');
-  ['dashboard','transaksi','tagihan','target','anggaran','berulang','kas','cabang','laporan','akuntansi','piutang','liab','appr','audit','stok','invoice','pengaturan'].forEach(p=>{
+  document.querySelectorAll('.nav-item.owner-only').forEach(b=>b.style.display=(ME&&(ME.role==='owner'||(ME.role==='manajer'&&b.dataset.p==='appr')))?'':'none');
+  ['dashboard','transaksi','tagihan','target','anggaran','berulang','kas','cabang','laporan','akuntansi','piutang','liab','appr','audit','stok','invoice','pengaturan','panduan'].forEach(p=>{
     const el=$('p-'+p);if(el)el.style.display=p===view?'':'none';});
 if($('fCatF')&&!$('fCatF').options.length){$('fCatF').innerHTML='<option value="">Semua kategori</option>'+(meta?.categories||[]).map(c=>`<option>${esc(c.name)}</option>`).join('');}
-    ({dashboard:(ME&&ME.role==='kariawan')?renderBranch:renderDash,transaksi:loadTx,tagihan:loadBills,target:loadGoals,
+    ({dashboard:(ME&&(ME.role==='kariawan'||ME.role==='manajer'))?renderBranch:renderDash,transaksi:loadTx,tagihan:loadBills,target:loadGoals,
     anggaran:loadBudgets,berulang:loadRec,kas:renderWallets,cabang:renderCabang,laporan:renderReport,
     akuntansi:renderAkuntansi,piutang:loadRecv,liab:loadLiab,appr:loadAppr,audit:loadAudit,stok:loadProd,invoice:loadInv,
-    pengaturan:()=>{loadSettings();renderCatManager();loadRuleManager();loadClosedPeriods();}}[view]||(()=>{}))();
+    pengaturan:()=>{loadSettings();renderCatManager();loadRuleManager();loadClosedPeriods();},panduan:()=>{}}[view]||(()=>{}))();
 }
 
 /* ===== ATURAN CERDAS (smart rules) ===== */
@@ -743,9 +777,18 @@ async function decideAppr(id,decision){
 async function loadAudit(){
   const d=await api('audit_log_list');if(d.error)return;
   let h='<thead><tr><th>Waktu</th><th>User</th><th>Aksi</th><th>Detail</th></tr></thead><tbody>';
-  for(const r of d.rows)h+=`<tr><td style="white-space:nowrap">${(r.created_at||'').slice(0,16)}</td>
+  const j=s=>{try{return JSON.parse(s);}catch(e){return null;}};
+  for(const r of d.rows){
+    let det=esc(r.detail||'');
+    const ov=j(r.old_values),nv=j(r.new_values);
+    if(ov||nv){
+      det+='<div class="small" style="margin-top:4px;color:#b45309">';
+      if(ov)det+='Sebelum: '+esc(Object.entries(ov).map(([k,v])=>k+'='+v).join(', '))+'<br>';
+      if(nv)det+='Sesudah: '+esc(Object.entries(nv).map(([k,v])=>k+'='+v).join(', '));
+      det+='</div>';}
+    h+=`<tr><td style="white-space:nowrap">${(r.created_at||'').slice(0,16)}</td>
     <td><b>${esc(r.username||'—')}</b></td><td><span class="badge b-transfer">${esc(r.action)}</span></td>
-    <td class="small">${esc(r.detail||'')}</td></tr>`;
+    <td class="small">${det}</td></tr>`;}
   $('tblAudit').innerHTML=h+'</tbody>'||'<tr><td colspan=4 class=empty>Belum ada aktivitas</td></tr>';
 }
 
@@ -916,11 +959,12 @@ async function loadTx(){
     for(const r of d.rows){
       h+=`<tr><td style="white-space:nowrap">${r.tx_date}</td>
         <td><span class="badge b-${r.type}">${r.type}</span></td>
-        <td>${esc(r.description)}<br><span class="small">${esc(r.cat||'')}${r.display_name?' • oleh '+esc(r.display_name):''}</span></td>
+        <td>${esc(r.description)}<br><span class="small">${r.tx_no?'No. '+esc(r.tx_no)+' • ':''}${esc(r.cat||'')}${r.display_name?' • oleh '+esc(r.display_name):''}</span></td>
         <td>${r.biz?`<span class="badge b-usaha">${esc(r.biz)}</span>`:'<span class="badge b-pribadi">pribadi</span>'}</td>
         <td class="small">${esc(r.wallet||'')}</td>
         <td style="text-align:right;font-weight:700" class="${r.type==='masuk'?'pos':'neg'}">${r.type==='masuk'?'+':'−'}${fmt(r.amount).slice(3)}</td>
         <td><span style="cursor:pointer" title="lampiran nota" onclick="openAtt(${r.id},${JSON.stringify(r.description)})">📎</span>
+            <span style="cursor:pointer" title="salin link struk digital" onclick="copyReceipt(${r.id})">🔗</span>
             <span style="cursor:pointer" title="hapus" onclick="delTx(${r.id})">🗑️</span></td></tr>`;
     }
     $('tblTx').innerHTML=h+'</tbody>';
@@ -935,6 +979,12 @@ async function delTx(id){
   if(!confirm('Hapus transaksi ini? Kas otomatis dikembalikan.'))return;
   const d=await api('tx_delete',{id});
   if(d.ok){toast('Terhapus');renderPage();}else toast(d.error);
+}
+async function copyReceipt(id){
+  const d=await api('receipt_link',{id});
+  if(d.error)return toast(d.error);
+  const url=location.origin+'/'+d.url;
+  try{await navigator.clipboard.writeText(url);toast('Link struk disalin ✅');}catch(e){prompt('Salin link struk:',url);}
 }
 
 /* ===== MODAL TRANSAKSI ===== */
@@ -1243,12 +1293,13 @@ function openUser(){
    <div class="row2"><input id="uname" placeholder="Username login">
    <input id="upass" placeholder="Password (min 4)"></div>
    <select id="ubiz">${meta.businesses.map(b=>`<option value="${b.id}">${esc(b.name)}</option>`).join('')}</select>
+   <select id="urole"><option value="kariawan">Kariawan — input & lihat cabangnya</option><option value="manajer">Manajer — + setujui pengeluaran cabang</option></select>
    <button onclick="saveUser()">Simpan</button><div id="merr" class="small neg" style="margin-top:8px"></div>
    <div id="uhint" class="small pos" style="margin-top:8px"></div></div></div>`;
 }
 async function saveUser(){
   const d=await api('user_add',{username:uname.value,password:upass.value,
-    display_name:udisp.value,business_id:ubiz.value});
+    display_name:udisp.value,business_id:ubiz.value,role:urole.value});
   if(d.error){merr.textContent=d.error;return;}
   uhint.innerHTML='✅ Berhasil!<br>Instruksi untuk kariawan:<br><b>Kirim ke bot:</b> '+esc(d.bot_hint);
   meta=await api('meta');

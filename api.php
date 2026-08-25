@@ -585,28 +585,36 @@ case 'branch_rank':
 /* ---------- APPROVAL FLOW ---------- */
 case 'appr_list':
     require_login();
-    $st = db()->prepare("SELECT a.*, u.display_name requester, b.name biz FROM approvals a
-        LEFT JOIN users u ON u.id=a.user_id LEFT JOIN businesses b ON b.id=a.business_id
-        WHERE a.status='pending' ORDER BY a.created_at DESC");
-    $st->execute();
+    $u = require_login();
+    if ($u['business_id']) { // manajer/kariawan cabang: hanya cabangnya
+        $st = db()->prepare("SELECT a.*, u.display_name requester, b.name biz FROM approvals a
+            LEFT JOIN users u ON u.id=a.user_id LEFT JOIN businesses b ON b.id=a.business_id
+            WHERE a.status='pending' AND a.business_id=? ORDER BY a.created_at DESC");
+        $st->execute([(int)$u['business_id']]);
+    } else {
+        $st = db()->prepare("SELECT a.*, u.display_name requester, b.name biz FROM approvals a
+            LEFT JOIN users u ON u.id=a.user_id LEFT JOIN businesses b ON b.id=a.business_id
+            WHERE a.status='pending' ORDER BY a.created_at DESC");
+        $st->execute();
+    }
     out(['rows'=>$st->fetchAll()]);
 
 case 'appr_request':
     $u = require_login();
     if (($u['role'] ?? '') === 'owner' || !$u['business_id'])
-        out(['error'=>'Approval khusus kariawan cabang'],422);
+        out(['error'=>'Approval khusus kariawan/manajer cabang'],422);
     $id = db()->prepare("INSERT INTO approvals (user_id,business_id,type,amount,description) VALUES (?,?,?,?,?)");
     $id->execute([$u['id'],$u['business_id'],
         ($input['type']??'')==='masuk'?'masuk':'keluar',
         (float)($input['amount']??0), trim($input['description']??'')]);
     notify_owner_force("PERMINTAAN PERSETUJUAN\nRp ".number_format((float)($input['amount']??0),0,',','.').
         "\n".trim($input['description']??'')."\nOleh: {$u['display_name']}\nBuka dashboard -> Persetujuan");
-    audit_log($u,'appr_request','Rp '.($input['amount']??0).' '.($input['description']??''));
+    audit_log($u,'appr_request','Rp '.($input['amount']??0).' '.($input['description']??''),'approval',$id,null,['amount'=>(float)($input['amount']??0),'description'=>$input['description']??'']);
     out(['ok'=>true,'id'=>(int)db()->lastInsertId()]);
 
 case 'appr_decide':
     $u = require_login();
-    if (($u['role'] ?? '') !== 'owner') out(['error' => 'Khusus owner'], 403);
+    require_role($u, ['owner', 'manajer']);
     $id=(int)($input['id']??0); $ok=($input['decision']??'')==='approve';
     $st=db()->prepare("SELECT a.*, us.display_name FROM approvals a LEFT JOIN users us ON us.id=a.user_id WHERE a.id=? AND a.status='pending'");
     $st->execute([$id]);
@@ -623,16 +631,36 @@ case 'appr_decide':
         db()->prepare("UPDATE approvals SET status='rejected',decided_by=?,decided_at=NOW() WHERE id=?")
             ->execute([$u['id'],$id]);
     }
-    audit_log($u,'appr_decide',"#{$id} ".($ok?'approved':'rejected'));
+    audit_log($u,'appr_decide',"#{$id} ".($ok?'approved':'rejected'),'approval',$id,['status'=>'pending'],['status'=>$ok?'approved':'rejected']);
     out(['ok'=>true]);
+
+/* ---------- STRUK DIGITAL (share link tanpa login) ---------- */
+case 'receipt_link':
+    require_login();
+    $id = (int)($input['id'] ?? 0);
+    $st = db()->prepare("SELECT tx_no FROM transactions WHERE id=?");
+    $st->execute([$id]);
+    $r = $st->fetch();
+    if (!$r || empty($r['tx_no'])) out(['error' => 'Struk tidak ada'], 404);
+    $salt = cfg('receipt_salt', 'dompet-owner-receipt-v1');
+    $token = hash('sha256', $r['tx_no'] . '|' . $id . '|' . $salt);
+    out(['ok' => true, 'url' => 'receipt.php?no=' . urlencode($r['tx_no']) . '&t=' . $token]);
 
 /* ---------- AUDIT LOG ---------- */
 case 'audit_log_list':
     require_login();
     $u = require_login();
-    if (($u['role'] ?? '') !== 'owner') out(['error' => 'Khusus owner'], 403);
+    require_role($u, ['owner']);
     $limit = min(max((int)($_GET['limit'] ?? 50), 1), 200);
-    out(['rows'=>db()->query("SELECT * FROM audit_log ORDER BY id DESC LIMIT $limit")->fetchAll()]);
+    if (!empty($_GET['q'])) {
+        $st = db()->prepare("SELECT * FROM audit_log WHERE action LIKE ? OR username LIKE ? OR detail LIKE ?
+            ORDER BY id DESC LIMIT $limit");
+        $q = '%' . $_GET['q'] . '%';
+        $st->execute([$q, $q, $q]);
+    } else {
+        $st = db()->query("SELECT * FROM audit_log ORDER BY id DESC LIMIT $limit");
+    }
+    out(['rows'=>$st->fetchAll()]);
 
 /* ---------- KOMPARASI ANTAR TAHUN ---------- */
 case 'year_compare':
@@ -1055,10 +1083,12 @@ case 'user_add':
     if ($username===''||strlen($pass)<4) out(['error'=>'Username kosong / password minimal 4 karakter'],422);
     $st=db()->prepare("SELECT id FROM users WHERE username=?"); $st->execute([$username]);
     if ($st->fetch()) out(['error'=>'Username sudah dipakai'],422);
+    $role = in_array($input['role'] ?? '', ['kariawan','manajer'], true) ? $input['role'] : 'kariawan';
     db()->prepare("INSERT INTO users (username,password_hash,display_name,role,business_id) VALUES (?,?,?,?,?)")
         ->execute([$username, password_hash($pass,PASSWORD_DEFAULT),
-            trim($input['display_name']?:$username), 'kariawan',
+            trim($input['display_name']?:$username), $role,
             !empty($input['business_id'])?(int)$input['business_id']:null]);
+    audit_log($u,'user_add',$username.' ('.$role.')','user',(int)db()->lastInsertId(),null,['username'=>$username,'role'=>$role]);
     out(['ok'=>true,'id'=>(int)db()->lastInsertId(),
         'bot_hint'=>"Kariawan kirim: /start $username $pass"]);
 
@@ -1336,7 +1366,11 @@ case 'tx_delete':
     }
     $pdo->prepare("DELETE FROM transactions WHERE id=?")->execute([$id]);
     $pdo->commit();
-    audit_log($u,'tx_delete',"tx #{$id} ({$t['type']} {$t['amount']}) '{$t['description']}'");
+    audit_log($u,'tx_delete',"tx #{$id} ({$t['type']} {$t['amount']}) '{$t['description']}'",
+        'transaction', $id,
+        ['tanggal'=>$t['tx_date'],'type'=>$t['type'],'amount'=>(float)$t['amount'],
+         'description'=>$t['description'],'source'=>$t['source'],'tx_no'=>$t['tx_no'] ?? null],
+        null);
     out(['ok' => true]);
 
 case 'backup_run':
