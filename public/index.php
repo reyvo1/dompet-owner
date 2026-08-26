@@ -47,6 +47,7 @@
     <button class="nav-item owner-only" data-p="payroll"><span class="ic">👥</span>Gaji Staf</button>
     <button class="nav-item owner-only" data-p="pajak"><span class="ic">🏛️</span>Pajak</button>
     <button class="nav-item owner-only" data-p="assets"><span class="ic">🏭</span>Aset</button>
+    <button class="nav-item owner-only" data-p="petty"><span class="ic">🪙</span>Kas Kecil</button>
     <button class="nav-item owner-only" data-p="stok"><span class="ic">📦</span>Stok</button>
     <button class="nav-item owner-only" data-p="invoice"><span class="ic">🧾</span>Kwitansi</button>
         <button class="nav-item owner-only" data-p="appr"><span class="ic">🔔</span>Persetujuan</button>
@@ -399,6 +400,7 @@
         <div>
           <button class="btn btn-sm" onclick="taxSync()">🔄 Sinkron dari Transaksi</button>
           <button class="btn btn-sm" onclick="openTax()">+ Entri Manual</button>
+          <a class="btn btn-sm" style="text-decoration:none" href="/export-pajak.php?period=<?php echo date('Y-m'); ?>" download>📊 Ekspor Excel</a>
         </div>
       </div>
       <div id="taxDueBanner"></div>
@@ -416,6 +418,20 @@
         </div>
       </div>
       <div class="panel table-card"><div class="data-table-wrap"><table id="tblAssets"></table></div></div>
+    </section>
+
+    <!-- KAS KECIL & KURS -->
+    <section id="p-petty" style="display:none">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px">
+        <div class="page-title"><h2>Kas Kecil (Petty Cash)</h2><p>Dana operasional harian per cabang. Top-up dari kas utama, belanja langsung dicatat jurnal.</p></div>
+        <div>
+          <button class="btn btn-sm" onclick="openFx()">💱 Kurs Mata Uang</button>
+          <button class="btn btn-sm" onclick="openPetty()">+ Kas Kecil Baru</button>
+        </div>
+      </div>
+      <div id="pettyCards" class="kpi-grid"></div>
+      <h3 style="margin:20px 0 10px;font-size:15px">📜 Riwayat</h3>
+      <div class="panel table-card"><div class="data-table-wrap"><table id="tblPettyTx"></table></div></div>
     </section>
     </main>
   </div>
@@ -585,12 +601,12 @@ document.querySelectorAll('.nav-item').forEach(b=>b.addEventListener('click',()=
 }));
 function renderPage(){
   document.querySelectorAll('.nav-item.owner-only').forEach(b=>b.style.display=(ME&&(ME.role==='owner'||(ME.role==='manajer'&&b.dataset.p==='appr')))?'':'none');
-  ['dashboard','transaksi','tagihan','target','anggaran','berulang','kas','cabang','laporan','akuntansi','piutang','liab','payroll','pajak','assets','appr','audit','stok','invoice','pengaturan','panduan'].forEach(p=>{
+  ['dashboard','transaksi','tagihan','target','anggaran','berulang','kas','cabang','laporan','akuntansi','piutang','liab','payroll','pajak','assets','petty','appr','audit','stok','invoice','pengaturan','panduan'].forEach(p=>{
     const el=$('p-'+p);if(el)el.style.display=p===view?'':'none';});
 if($('fCatF')&&!$('fCatF').options.length){$('fCatF').innerHTML='<option value="">Semua kategori</option>'+(meta?.categories||[]).map(c=>`<option>${esc(c.name)}</option>`).join('');}
     ({dashboard:(ME&&(ME.role==='kariawan'||ME.role==='manajer'))?renderBranch:renderDash,transaksi:loadTx,tagihan:loadBills,target:loadGoals,
     anggaran:loadBudgets,berulang:loadRec,kas:renderWallets,cabang:renderCabang,laporan:renderReport,
-    akuntansi:renderAkuntansi,piutang:()=>{loadRecv();loadAging();},liab:loadLiab,payroll:loadPayroll,pajak:loadTax,assets:loadAssets,appr:loadAppr,audit:loadAudit,stok:loadProd,invoice:loadInv,
+    akuntansi:renderAkuntansi,piutang:()=>{loadRecv();loadAging();},liab:loadLiab,payroll:loadPayroll,pajak:loadTax,assets:loadAssets,petty:loadPetty,appr:loadAppr,audit:loadAudit,stok:loadProd,invoice:loadInv,
     pengaturan:()=>{loadSettings();renderCatManager();loadRuleManager();loadClosedPeriods();},panduan:()=>{}}[view]||(()=>{}))();
 }
 
@@ -1889,6 +1905,76 @@ async function doImport(){
     toast(`Import selesai ✅ ${d.imported} masuk, ${d.skipped} dilewati`);
     renderPage();
   }catch(e){merr.textContent='Gagal upload: '+e.message;}
+}
+
+/* ===== KAS KECIL (PETTY CASH) ===== */
+let PETTY=[];
+async function loadPetty(){
+  const d=await api('petty_list');if(d.error)return;PETTY=d.rows;
+  $('pettyCards').innerHTML=d.rows.length?d.rows.map(r=>`
+   <div class="panel"><h3 style="font-size:13px">🪙 ${esc(r.name)}${r.custodian?` <span class="small">(${esc(r.custodian)})</span>`:''}</h3>
+    <div style="font-size:21px;font-weight:800;margin:6px 0">${fmt(r.fund)}</div>
+    <div class="small" style="margin-bottom:10px">${r.biz?esc(r.biz):'Pusat'}${r.replenish_to?' • imprest '+fmt(r.replenish_to):''}</div>
+    <div style="display:flex;gap:6px">
+      <button class="btn btn-sm btn-green" onclick="pettyMove(${r.id},'topup')">＋ Top-up</button>
+      <button class="btn btn-sm" onclick="pettyMove(${r.id},'spend')">－ Belanja</button>
+      <button class="btn btn-sm btn-red" onclick="pettyMove(${r.id},'return')">↩ Kembali</button>
+    </div></div>`).join(''):'<div class="empty panel">Belum ada kas kecil — klik "+ Kas Kecil Baru"</div>';
+  const h=await api('petty_history',{id:d.rows[0]?.id||0});
+  if(!h.error&&d.rows.length){
+    const L={topup:'⬆ top-up',spend:'💸 belanja',return:'↩ kembali'};
+    let t='<thead><tr><th>Tanggal</th><th>Jenis</th><th style="text-align:right">Jumlah</th><th>Keterangan</th><th>No. Nota</th></tr></thead><tbody>';
+    for(const r of h.rows)
+      t+=`<tr><td>${r.tx_date}</td><td>${L[r.direction]||r.direction}</td>
+       <td style="text-align:right">${r.direction==='spend'?'-':'+'}${fmt(r.amount)}</td>
+       <td>${esc(r.description||'—')}</td><td>${esc(r.receipt_no||'—')}</td></tr>`;
+    $('tblPettyTx').innerHTML=t+(h.rows.length?'':'<tr><td colspan=5 class=empty>Belum ada aktivitas</td></tr>')+'</tbody>';
+  } else if(d.rows.length===0) $('tblPettyTx').innerHTML='';
+}
+function openPetty(){
+  $('modal').innerHTML=`<div class="modal-bg" onclick="if(event.target===this)closeModal()">
+   <div class="modal"><h1 style="font-size:17px">🪙 Kas Kecil Baru</h1>
+   <input id="ptname" placeholder="Nama (mis. Kas Kecil Cabang 1)">
+   <input id="ptcust" placeholder="Penanggung jawab (opsional)">
+   <div class="row2"><input id="ptfund" type="number" placeholder="Dana awal">
+   <input id="ptrepl" type="number" placeholder="Imprest/target (opsional)"></div>
+   <select id="ptbiz"><option value="">Pusat</option>${meta.businesses.map(b=>`<option value="${b.id}">${esc(b.name)}</option>`).join('')}</select>
+   <button onclick="savePetty()">Simpan</button><div id="merr" class="small neg" style="margin-top:8px"></div></div></div>`;
+}
+async function savePetty(){
+  const d=await api('petty_add',{name:ptname.value,custodian:ptcust.value,fund:+(ptfund.value||0),
+    replenish_to:+(ptrepl.value||0)||null,business_id:ptbiz.value||null});
+  if(d.error){merr.textContent=d.error;return;}
+  closeModal();toast('Kas kecil dibuat 🪙');loadPetty();
+}
+async function pettyMove(id,dir){
+  const L={topup:'Nominal top-up dari kas utama:',spend:'Nominal belanja:',return:'Nominal dikembalikan ke kas utama:'};
+  const v=prompt(L[dir],'50000');if(v===null)return;
+  let desc=null,rc=null;
+  if(dir==='spend'){desc=prompt('Untuk apa belanjanya?');if(desc===null)return;
+    rc=prompt('No. nota/kwitansi (opsional):')||null;}
+  const d=await api('petty_tx',{id,direction:dir,amount:+v,description:desc,receipt_no:rc});
+  if(d.ok){toast(`Saldo kas kecil sekarang ${fmt(d.fund)} ✅`);loadPetty();renderPage();}else toast(d.error,true);
+}
+
+/* ===== KURS MATA UANG ===== */
+async function openFx(){
+  const d=await api('fx_list');if(d.error)return;
+  const rows=d.rates.map(r=>`<tr><td><b>${esc(r.code)}</b> ${esc(r.name)}</td>
+   <td style="text-align:right">${(+r.rate).toLocaleString('id-ID',{maximumFractionDigits:4})}</td>
+   <td><span class="small">${String(r.updated_at).slice(0,16)}</span></td></tr>`).join('');
+  $('modal').innerHTML=`<div class="modal-bg" onclick="if(event.target===this)closeModal()">
+   <div class="modal"><h1 style="font-size:17px">💱 Kurs Mata Uang (ke Rupiah)</h1>
+   <table style="width:100%;margin-bottom:12px"><thead><tr><th>Kode</th><th style="text-align:right">1 unit = Rp</th><th>Diperbarui</th></tr></thead><tbody>${rows}</tbody></table>
+   <div class="row2"><input id="fxcode" placeholder="Kode (mis. USD)" maxlength="3" style="text-transform:uppercase">
+   <input id="fxname" placeholder="Nama (mis. Dolar AS)"></div>
+   <input id="fxrate" type="number" step="0.0001" placeholder="Kurs (mis. 16250)">
+   <button onclick="saveFx()">Simpan Kurs</button><div id="merr" class="small neg" style="margin-top:8px"></div></div></div>`;
+}
+async function saveFx(){
+  const d=await api('fx_set',{code:fxcode.value,name:fxname.value,rate:+(fxrate.value||0)});
+  if(d.error){merr.textContent=d.error;return;}
+  toast('Kurs disimpan 💱');openFx();
 }
 
 /* ===== LAPORAN ===== */

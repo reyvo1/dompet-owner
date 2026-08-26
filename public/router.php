@@ -33,6 +33,11 @@ if ($uri === '/payslip.php' || str_starts_with($uri, '/payslip.php?')) {
     require __DIR__ . '/../payslip.php';
     return true;
 }
+if ($uri === '/export-pajak.php' || str_starts_with($uri, '/export-pajak.php?')) {
+    chdir(dirname(__DIR__));
+    require __DIR__ . '/../export-pajak.php';
+    return true;
+}
 if ($uri === '/tv.php') {
     chdir(dirname(__DIR__));
     require __DIR__ . '/../tv.php';

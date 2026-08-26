@@ -1758,6 +1758,100 @@ case 'import_csv':
         ->execute([substr((string)($_FILES['file']['name'] ?? ''), 0, 160), $okRows + $skipRows, $okRows, $skipRows, $u['id']]);
     out(['ok' => true, 'imported' => $okRows, 'skipped' => $skipRows]);
 
+/* ---------- KAS KECIL (PETTY CASH) ---------- */
+case 'petty_list':
+    require_login();
+    $rows = db()->query("SELECT pc.*, b.name biz FROM petty_cash pc LEFT JOIN businesses b ON b.id=pc.business_id
+        WHERE pc.active=1 ORDER BY pc.id")->fetchAll();
+    out(['rows' => $rows]);
+
+case 'petty_add':
+    $u = require_login(); if ($u['role'] !== 'owner') out(['error' => 'Khusus owner'], 403);
+    $name = trim($input['name'] ?? '');
+    if ($name === '') out(['error' => 'Nama kas kecil wajib'], 422);
+    db()->prepare("INSERT INTO petty_cash (business_id,name,custodian,fund,replenish_to) VALUES (?,?,?,?,?)")
+        ->execute([!empty($input['business_id']) ? (int)$input['business_id'] : null, $name,
+            trim($input['custodian'] ?? '') ?: null, (float)($input['fund'] ?? 0),
+            !empty($input['replenish_to']) ? (float)$input['replenish_to'] : null]);
+    out(['ok' => true, 'id' => (int)db()->lastInsertId()]);
+
+case 'petty_delete':
+    $u = require_login(); if ($u['role'] !== 'owner') out(['error' => 'Khusus owner'], 403);
+    db()->prepare("UPDATE petty_cash SET active=0 WHERE id=?")->execute([(int)($input['id'] ?? 0)]);
+    out(['ok' => true]);
+
+case 'petty_tx':
+    // topup: kas utama -> kas kecil | spend: belanja dari kas kecil (jurnal beban) | return: kembalikan dana
+    $u = require_login();
+    $id = (int)($input['id'] ?? 0);
+    $dir = in_array($input['direction'] ?? '', ['topup','spend','return'], true) ? $input['direction'] : '';
+    $amt = round((float)($input['amount'] ?? 0), 2);
+    if (!$dir || $amt <= 0) out(['error' => 'Arah & nominal wajib'], 422);
+    $st = db()->prepare("SELECT * FROM petty_cash WHERE id=? AND active=1"); $st->execute([$id]);
+    if (!$p = $st->fetch()) out(['error' => 'Kas kecil tidak ada'], 404);
+    if ($dir === 'spend' && $amt > (float)$p['fund']) out(['error' => 'Saldo kas kecil kurang (' . number_format((float)$p['fund'],0,',','.') . ')'], 422);
+    $w = wallet_default()['id'];
+    $pdo = db();
+    $pdo->beginTransaction();
+    try {
+        if ($dir === 'spend') {
+            require_once __DIR__ . '/src/ledger.php';
+            $cid = !empty($input['category_id']) ? (int)$input['category_id'] : null;
+            post_journal(date('Y-m-d'), "Kas kecil {$p['name']}: " . trim($input['description'] ?? ''), [
+                ['account'=>'6-1300','debit'=>$amt],
+                ['account'=>'1-1000','credit'=>$amt]], null);
+            $pdo->prepare("UPDATE wallets SET balance=balance-? WHERE id=?")->execute([$amt, $w]);
+            $pdo->prepare("UPDATE petty_cash SET fund=fund-? WHERE id=?")->execute([$amt, $id]);
+        } elseif ($dir === 'topup') {
+            $pdo->prepare("INSERT INTO transactions (tx_date,type,amount,description,scope,business_id,wallet_id,source,user_id)
+                VALUES (?, 'keluar', ?, ?, 'usaha', ?, ?, 'owner', ?)")
+                ->execute([date('Y-m-d'), $amt, "Top-up kas kecil {$p['name']}", $p['business_id'], $w, $u['id']]);
+            $pdo->prepare("UPDATE wallets SET balance=balance-? WHERE id=?")->execute([$amt, $w]);
+            $pdo->prepare("UPDATE petty_cash SET fund=fund+? WHERE id=?")->execute([$amt, $id]);
+        } else { // return
+            $pdo->prepare("INSERT INTO transactions (tx_date,type,amount,description,scope,business_id,wallet_id,source,user_id)
+                VALUES (?, 'masuk', ?, ?, 'usaha', ?, ?, 'owner', ?)")
+                ->execute([date('Y-m-d'), $amt, "Pengembalian dana kas kecil {$p['name']}", $p['business_id'], $w, $u['id']]);
+            $pdo->prepare("UPDATE wallets SET balance=balance+? WHERE id=?")->execute([$amt, $w]);
+            $pdo->prepare("UPDATE petty_cash SET fund=fund-? WHERE id=?")->execute([$amt, $id]);
+        }
+        $pdo->prepare("INSERT INTO petty_tx (petty_id,tx_date,direction,amount,description,receipt_no,created_by)
+            VALUES (?,?,?,?,?,?,?)")
+            ->execute([$id, date('Y-m-d'), $dir, $amt, trim($input['description'] ?? '') ?: null,
+                trim($input['receipt_no'] ?? '') ?: null, $u['id']]);
+        // info saldo baru utk respons
+        $g = $pdo->prepare("SELECT fund FROM petty_cash WHERE id=?"); $g->execute([$id]);
+        $fund = (float)$g->fetch()['fund'];
+        $pdo->commit();
+    } catch (Throwable $e) {
+        $pdo->rollBack();
+        out(['error' => 'Gagal proses kas kecil: ' . $e->getMessage()], 500);
+    }
+    out(['ok' => true, 'fund' => $fund]);
+
+case 'petty_history':
+    require_login();
+    $id = (int)($_GET['id'] ?? $input['id'] ?? 0);
+    $st = db()->prepare("SELECT * FROM petty_tx WHERE petty_id=? ORDER BY id DESC LIMIT 50");
+    $st->execute([$id]);
+    out(['rows' => $st->fetchAll()]);
+
+/* ---------- MULTI MATA UANG ---------- */
+case 'fx_list':
+    require_login();
+    out(['rates' => db()->query("SELECT * FROM fx_rates ORDER BY code")->fetchAll()]);
+
+case 'fx_set':
+    $u = require_login(); if ($u['role'] !== 'owner') out(['error' => 'Khusus owner'], 403);
+    $code = strtoupper(substr(preg_replace('/[^A-Za-z]/', '', (string)($input['code'] ?? '')), 0, 3));
+    if (strlen($code) !== 3) out(['error' => 'Kode mata uang harus 3 huruf (mis. USD)'], 422);
+    $rate = (float)($input['rate'] ?? 1);
+    if ($rate <= 0) out(['error' => 'Kurs harus > 0'], 422);
+    db()->prepare("INSERT INTO fx_rates (code,name,rate) VALUES (?,?,?)
+        ON DUPLICATE KEY UPDATE rate=VALUES(rate), name=VALUES(name)")
+        ->execute([$code, trim($input['name'] ?? '') ?: $code, $rate]);
+    out(['ok' => true]);
+
 default:
     out(['error' => 'Action tidak dikenal'], 400);
 }
