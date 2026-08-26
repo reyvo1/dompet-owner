@@ -12,9 +12,10 @@ require __DIR__ . '/../bot/telegram.php';
 
 $pass = true;
 function check(bool $ok, string $label): void { global $pass; echo ($ok?'PASS':'FAIL')." - $label\n"; if(!$ok) $pass=false; }
-function msg(string $chatId, string $text): string {
+function msg(string $chatId, string $text): array {
     return handle_message(['chat'=>['id'=>$chatId],'text'=>$text]);
 }
+function txt($r): string { return is_array($r) ? (string)$r['text'] : (string)$r; }
 
 // reset transaksi, kas 0, sesi chat (tabel settings lama sudah jadi app_settings)
 db()->exec("DELETE FROM transactions; UPDATE wallets SET balance=0;
@@ -23,19 +24,19 @@ $GLOBALS['tg_calls'] = [];
 
 // 1. chat belum dikenal -> disuruh hubungkan via /mulai atau /start
 $r = msg('111', 'masuk 10000 tes');
-check(str_contains($r, 'mulai') || str_contains($r, '/start'), 'chat tak dikenal diminta login');
+check(str_contains(txt($r), 'mulai') || str_contains(txt($r), '/start'), 'chat tak dikenal diminta login');
 
 // 2. login salah password
 $r = msg('111', '/start budi wrongpass');
-check(str_contains($r, 'gagal'), 'login salah password ditolak');
+check(str_contains(txt($r), 'gagal'), 'login salah password ditolak');
 
 // 3. login benar
 $r = msg('111', '/start budi kariawan123');
-check(str_contains($r, 'berhasil'), 'login budi berhasil');
+check(str_contains(txt($r), 'berhasil'), 'login budi berhasil');
 
 // 4. input penjualan via bot
 $r = msg('111', 'masuk 300000 jual nasi goreng');
-check(str_contains($r, 'Tercatat') && str_contains($r, '300.000'), 'input masuk 300rb tercatat');
+check(str_contains(txt($r), 'Tercatat') && str_contains(txt($r), '300.000'), 'input masuk 300rb tercatat');
 
 // 5. notif owner: chat id owner belum diisi -> tg() tidak dipanggil (by design),
 //    jadi kita set dulu chat id owner lalu tes ulang alurnya
@@ -53,7 +54,7 @@ check($t == 525000.0, 'kas owner = 600rb - 75rb = 525rb');
 
 // 7. laporan harian bot
 $r = msg('111', '/hariini');
-check(str_contains($r, 'Masuk : Rp 600.000') && str_contains($r, 'Keluar: Rp 75.000'), '/hariini benar');
+check(str_contains(txt($r), 'Masuk : Rp 600.000') && str_contains(txt($r), 'Keluar: Rp 75.000'), '/hariini benar');
 
 // 8. laporan web tetap terpisah
 $p = laporan_bulan(date('Y-m'), null);
