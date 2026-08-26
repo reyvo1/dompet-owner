@@ -28,6 +28,11 @@ if ($uri === '/receipt.php' || str_starts_with($uri, '/receipt.php?')) {
     require __DIR__ . '/../receipt.php';
     return true;
 }
+if ($uri === '/payslip.php' || str_starts_with($uri, '/payslip.php?')) {
+    chdir(dirname(__DIR__));
+    require __DIR__ . '/../payslip.php';
+    return true;
+}
 if ($uri === '/tv.php') {
     chdir(dirname(__DIR__));
     require __DIR__ . '/../tv.php';

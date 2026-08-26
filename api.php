@@ -1582,6 +1582,43 @@ case 'tax_monthly_pay':
     }
     out(['ok' => true]);
 
+case 'payslip_link':
+    $u = require_login(); if ($u['role'] !== 'owner') out(['error' => 'Khusus owner'], 403);
+    $id = (int)($input['id'] ?? 0);
+    $st = db()->prepare("SELECT p.*, e.name emp FROM payrolls p JOIN employees e ON e.id=p.employee_id WHERE p.id=?");
+    $st->execute([$id]);
+    if (!$p = $st->fetch()) out(['error' => 'Slip tidak ada'], 404);
+    if ($p['status'] !== 'paid') out(['error' => 'Belum dibayar — bayar dulu sebelum bagikan slip'], 422);
+    $salt = cfg('receipt_salt', 'dompet-owner-receipt-v1');
+    $tok = hash('sha256', 'payslip|' . $p['id'] . '|' . $p['period'] . '|' . $salt);
+    out(['ok' => true, 'url' => 'payslip.php?id=' . $p['id'] . '&t=' . $tok, 'emp' => $p['emp']]);
+
+/* ---------- UMUR PIUTANG (aging) ---------- */
+case 'recv_aging':
+    require_login();
+    $rows = db()->query("SELECT r.*, b.name biz FROM receivables r
+        LEFT JOIN businesses b ON b.id=r.business_id WHERE r.status<>'paid'")->fetchAll();
+    $today = new DateTimeImmutable();
+    $buckets = ['belum_tempo'=>0,'1_30'=>0,'31_60'=>0,'61_90'=>0,'90plus'=>0];
+    foreach ($rows as &$r) {
+        $sisa = (float)$r['amount'] - (float)$r['paid_amount'];
+        $r['sisa'] = $sisa;
+        $r['days_late'] = null;
+        $buk = 'belum_tempo';
+        if (!empty($r['due_date'])) {
+            $due = new DateTimeImmutable($r['due_date']);
+            if ($due < $today) {
+                $days = (int)$today->diff($due)->days;
+                $r['days_late'] = $days;
+                $buk = $days <= 30 ? '1_30' : ($days <= 60 ? '31_60' : ($days <= 90 ? '61_90' : '90plus'));
+            }
+        }
+        $buckets[$buk] += $sisa;
+    }
+    unset($r);
+    usort($rows, fn($a, $b2) => ($b2['days_late'] ?? -1) <=> ($a['days_late'] ?? -1));
+    out(['rows' => $rows, 'buckets' => $buckets]);
+
 default:
     out(['error' => 'Action tidak dikenal'], 400);
 }

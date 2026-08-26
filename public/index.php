@@ -366,6 +366,9 @@
         <div class="page-title"><h2>Piutang (jualan tempo)</h2><p>Tercatat sebagai piutang dulu — bukan kas. Kas baru masuk saat dilunasi.</p></div>
         <button class="btn btn-sm" onclick="openRecv()">+ Piutang Baru</button></div>
       <div class="panel table-card"><div class="data-table-wrap"><table id="tblRecv"></table></div></div>
+      <h3 style="margin:20px 0 10px;font-size:15px">⏳ Umur Piutang (Aging)</h3>
+      <div id="recvAging"></div>
+      <div class="panel table-card" style="margin-top:12px"><div class="data-table-wrap"><table id="tblAging"></table></div></div>
     </section>
 
     <!-- LIABILITAS -->
@@ -573,7 +576,7 @@ function renderPage(){
 if($('fCatF')&&!$('fCatF').options.length){$('fCatF').innerHTML='<option value="">Semua kategori</option>'+(meta?.categories||[]).map(c=>`<option>${esc(c.name)}</option>`).join('');}
     ({dashboard:(ME&&(ME.role==='kariawan'||ME.role==='manajer'))?renderBranch:renderDash,transaksi:loadTx,tagihan:loadBills,target:loadGoals,
     anggaran:loadBudgets,berulang:loadRec,kas:renderWallets,cabang:renderCabang,laporan:renderReport,
-    akuntansi:renderAkuntansi,piutang:loadRecv,liab:loadLiab,payroll:loadPayroll,pajak:loadTax,appr:loadAppr,audit:loadAudit,stok:loadProd,invoice:loadInv,
+    akuntansi:renderAkuntansi,piutang:()=>{loadRecv();loadAging();},liab:loadLiab,payroll:loadPayroll,pajak:loadTax,appr:loadAppr,audit:loadAudit,stok:loadProd,invoice:loadInv,
     pengaturan:()=>{loadSettings();renderCatManager();loadRuleManager();loadClosedPeriods();},panduan:()=>{}}[view]||(()=>{}))();
 }
 
@@ -1686,7 +1689,7 @@ async function loadPayroll(){
      <td style="text-align:right" class="neg">${+r.deduction_amount?'-'+fmt(r.deduction_amount):'—'}</td>
      <td style="text-align:right"><b>${fmt(r.net_amount)}</b></td>
      <td><span class="badge ${paid?'b-done':'b-wait'}">${paid?'lunas':'pending'}</span></td>
-     <td>${paid?'✅':`<button class="btn btn-sm btn-green" onclick="payRun(${r.id})">Bayar</button>
+     <td>${paid?`✅ <button class="btn btn-sm" onclick="slipLink(${r.id})">🧾 Slip</button>`:`<button class="btn btn-sm btn-green" onclick="payRun(${r.id})">Bayar</button>
         <button class="btn btn-sm" onclick="payAdjust(${r.id},${r.base_amount},${r.bonus_amount},${r.deduction_amount})">±</button>`}</td></tr>`;
   }
   $('tblPayroll').innerHTML=h+(d.rows.length?'':'<tr><td colspan=8 class=empty>Belum ada gajian — klik "Buat Gajian Bulan Ini"</td></tr>')+'</tbody>'
@@ -1723,6 +1726,33 @@ async function payAdjust(id,base,bonus,ded){
   const c=prompt(`Potongan untuk bulan ini: (sekarang ${ded})`,ded);if(c===null)return;
   const d=await api('payroll_adjust',{id,bonus:+(b||0),deduction:+(c||0)});
   if(d.ok){toast('Gaji diperbarui');loadPayroll();}else toast(d.error,true);
+}
+async function slipLink(id){
+  const d=await api('payslip_link',{id});
+  if(d.ok){window.open(d.url.replace(/^/,'/'),'_blank');}
+  else toast(d.error,true);
+}
+
+/* ===== UMUR PIUTANG (aging) ===== */
+async function loadAging(){
+  const d=await api('recv_aging');if(d.error)return;
+  const B=[['belum_tempo','Belum tempo'],['1_30','Lewat 1-30 hr'],['31_60','31-60 hr'],['61_90','61-90 hr'],['90plus','>90 hr ⚠️']];
+  const el=$('recvAging');if(!el)return;
+  el.innerHTML=`<div class="kpi-grid">`+B.map(([k,l])=>{
+    const hot=k==='90plus'&&d.buckets[k]>0;
+    return `<div class="panel" style="${hot?'border-left:4px solid #dc2626':''}">
+      <h3 style="font-size:12.5px;color:var(--fd-text-muted,#6b7280)">${l}</h3>
+      <div style="font-size:19px;font-weight:800;margin-top:4px">${fmt(d.buckets[k]||0)}</div></div>`;
+  }).join('')+`</div>`;
+  let h='<thead><tr><th>Piutang</th><th>Jatuh Tempo</th><th style="text-align:right">Telat</th><th style="text-align:right">Sisa</th><th>Aksi</th></tr></thead><tbody>';
+  for(const r of d.rows){
+    h+=`<tr><td><b>${esc(r.debtor_name)}</b>${r.biz?` <span class="small">${esc(r.biz)}</span>`:''}</td>
+     <td>${r.due_date||'—'}</td>
+     <td style="text-align:right">${r.days_late!=null?`<span class="badge ${r.days_late>60?'b-keluar':'b-wait'}">${r.days_late} hari</span>`:'—'}</td>
+     <td style="text-align:right"><b>${fmt(r.sisa)}</b></td>
+     <td><button class="btn btn-sm btn-green" onclick="payRecv(${r.id},${r.sisa})">Terima</button></td></tr>`;
+  }
+  $('tblAging').innerHTML=h+(d.rows.length?'':'<tr><td colspan=5 class=empty>Semua piutang lunas 🎉</td></tr>')+'</tbody>';
 }
 
 /* ===== PAJAK BULANAN ===== */
