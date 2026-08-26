@@ -46,6 +46,42 @@ function finance_context(): string {
     return $out;
 }
 
+// AI baca foto struk/nota -> ekstrak JSON {total, merchant, items[], tanggal}
+function ai_read_receipt(string $imagePath): ?array {
+    $key = gemini_key();
+    if ($key === '' || !is_file($imagePath)) return null;
+    $mime = ['jpeg'=>'image/jpeg','png'=>'image/png','webp'=>'image/webp'][strtolower(pathinfo($imagePath, PATHINFO_EXTENSION))] ?? 'image/jpeg';
+    $b64 = base64_encode(file_get_contents($imagePath));
+    $prompt = "Kamu asisten keuangan. Baca struk/nota/foto pembayaran ini dan jawab HANYA json valid tanpa teks lain: "
+        . '{"total": angka_nominal_rupiah_tanpa_titik, "merchant": "nama toko", "tanggal": "YYYY-MM-DD atau null", "items": ["item1 @harga", "..."]}. '
+        . "Kalau bukan struk/nota, set total=0.";
+    $body = json_encode([
+        'contents' => [['parts' => [
+            ['text' => $prompt],
+            ['inline_data' => ['mime_type' => $mime, 'data' => $b64]],
+        ]]],
+        'generationConfig' => ['temperature' => 0.1, 'maxOutputTokens' => 400],
+    ]);
+    $ch = curl_init("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=" . urlencode($key));
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST => true,
+        CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+        CURLOPT_POSTFIELDS => $body,
+        CURLOPT_TIMEOUT => 45,
+    ]);
+    $res = curl_exec($ch);
+    curl_close($ch);
+    if (!$res) return null;
+    $j = json_decode($res, true);
+    $txt = $j['candidates'][0]['content']['parts'][0]['text'] ?? '';
+    if (!preg_match('/\{.*\}/s', $txt, $m)) return null;
+    $d = json_decode($m[0], true);
+    if (!is_array($d)) return null;
+    return ['total'=>(float)($d['total'] ?? 0), 'merchant'=>(string)($d['merchant'] ?? 'Nota'),
+            'tanggal'=>$d['tanggal'] ?? null, 'items'=>$d['items'] ?? []];
+}
+
 function ai_answer(string $question): string {
     $key = gemini_key();
     if ($key === '') return "API key Gemini belum dipasang. Minta bos isi dulu ya.";

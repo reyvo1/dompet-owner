@@ -242,15 +242,15 @@ function cabang_list_text(): string {
 }
 
 /* ---------- Alur catat transaksi pakai tombol ---------- */
-function session_get(string $chatId): array {
+function bot_session_get(string $chatId): array {
     $v = cfg("botflow:$chatId");
     return $v !== '' ? (json_decode($v, true) ?: []) : [];
 }
-function session_set(string $chatId, array $data): void {
+function bot_session_set(string $chatId, array $data): void {
     db()->prepare("INSERT INTO app_settings (k,v) VALUES (?,?) ON DUPLICATE KEY UPDATE v=VALUES(v)")
         ->execute(["botflow:$chatId", json_encode($data)]);
 }
-function session_clear(string $chatId): void {
+function bot_session_clear(string $chatId): void {
     db()->prepare("DELETE FROM app_settings WHERE k=?")->execute(["botflow:$chatId"]);
 }
 
@@ -268,6 +268,87 @@ function handle_ai_question(array $user, string $q): string {
         $q = "[Kamu membantu kariawan cabang bernama {$user['display_name']}. Jangan ungkap data owner/pribadi.] " . $q;
     }
     return ai_answer($q);
+}
+
+/* ---------- FOTO STRUK: AI baca -> tombol konfirmasi ---------- */
+function handle_photo(array $msg): void {
+    $chatId = (string)$msg['chat']['id'];
+    $user = find_user_by_chat($chatId);
+    if (!$user) {
+        tg('sendMessage', ['chat_id'=>$chatId,'text'=>"👋 Login dulu ya: /mulai KODE123"]);
+        return;
+    }
+    tg('sendChatAction', ['chat_id'=>$chatId, 'action'=>'typing']);
+    $photos = $msg['photo'] ?? [];
+    if (!$photos) return;
+    $best = end($photos); // resolusi terbesar
+    $token = bot_token();
+    // ambil path file dari Telegram
+    $ch = curl_init("https://api.telegram.org/bot{$token}/getFile?file_id=" . urlencode($best['file_id']));
+    curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER=>true, CURLOPT_TIMEOUT=>15]);
+    $res = json_decode(curl_exec($ch), true);
+    curl_close($ch);
+    $tgPath = $res['result']['file_path'] ?? null;
+    if (!$tgPath) {
+        tg('sendMessage', ['chat_id'=>$chatId,'text'=>"😅 Gagal mengambil fotonya. Coba kirim ulang."]);
+        return;
+    }
+    $dir = __DIR__ . '/../public/uploads';
+    if (!is_dir($dir)) mkdir($dir, 0777, true);
+    $local = $dir . '/tg_' . bin2hex(random_bytes(6)) . '.jpg';
+    copy("https://api.telegram.org/file/bot{$token}/{$tgPath}", $local);
+    if (!is_file($local)) {
+        tg('sendMessage', ['chat_id'=>$chatId,'text'=>"😅 Gagal mengunduh foto. Coba lagi ya."]);
+        return;
+    }
+    tg('sendChatAction', ['chat_id'=>$chatId, 'action'=>'typing']);
+    $d = ai_read_receipt($local);
+    if (!$d || (float)$d['total'] <= 0) {
+        unlink($local);
+        // fallback: biarkan AI menjelaskan foto sebagai pertanyaan
+        tg('sendMessage', ['chat_id'=>$chatId,
+            'text'=>"🤔 Aku belum bisa membaca total di foto itu.\nCoba ketik manual: `keluar 25000 " . mb_substr($d['merchant'] ?: 'belanja', 0, 40) . "`",
+            'parse_mode'=>'Markdown']);
+        return;
+    }
+    // simpan draft di sesi bot
+    bot_session_set($chatId, ['step'=>'rcpt','amount'=>$d['total'],'desc'=>$d['merchant'],'file'=>basename($local)]);
+    $items = implode("\n", array_map(fn($i)=>"  • ".mb_substr((string)$i,0,40), array_slice($d['items'] ?? [], 0, 5)));
+    tg('sendMessage', [
+        'chat_id'=>$chatId,
+        'text'=>"🧾 *Struk terbaca!*\n\n🏪 {$d['merchant']}\n💰 Total: Rp ".number_format($d['total'],0,',','.')
+            .($d['tanggal'] ? "\n📅 {$d['tanggal']}" : '')
+            .($items ? "\n\nRincian:\n$items" : '')
+            ."\n\nCatat sebagai apa?",
+        'parse_mode'=>'Markdown',
+        'reply_markup'=>json_encode(['inline_keyboard'=>[
+            [['text'=>'🟢 Uang Masuk','callback_data'=>'rcpt:masuk'],['text'=>'🔴 Uang Keluar','callback_data'=>'rcpt:keluar']],
+            [['text'=>'❌ Batal','callback_data'=>'tx:cancel']],
+        ]]),
+    ]);
+}
+function rcpt_confirm(array $user, string $chatId, string $type): void {
+    $f = bot_session_get($chatId);
+    $amt = (float)($f['amount'] ?? 0);
+    if ($amt <= 0) { tg('sendMessage',['chat_id'=>$chatId,'text'=>"Draft struk sudah tidak ada — kirim fotonya lagi ya."]); return; }
+    $desc = ($f['desc'] ?: 'Belanja') . ' [struk]';
+    $bizId = $user['business_id'] ? (int)$user['business_id'] : null;
+    add_transaction(['type'=>$type,'amount'=>$amt,'description'=>"$desc (via {$user['display_name']})",
+        'source'=>'bot_kariawan','user_id'=>$user['id'],'business_id'=>$bizId]);
+    $txId = (int)db()->lastInsertId();
+    // lampirkan foto struk ke transaksi
+    if (!empty($f['file']) && is_file(__DIR__ . '/../public/uploads/' . $f['file'])) {
+        db()->prepare("INSERT INTO tx_attachments (tx_id,filename,original_name) VALUES (?,?,?)")
+            ->execute([$txId, $f['file'], 'struk-telegram.jpg']);
+    } else {
+        bot_session_clear($chatId);
+    }
+    bot_session_clear($chatId);
+    $emoji = $type==='masuk'?'🟢 MASUK':'🔴 KELUAR';
+    notify_owner("{$emoji} [struk]\nRp ".number_format($amt,0,',','.')."\n{$desc}\nOleh: {$user['display_name']} (via foto Telegram)");
+    tg('sendMessage', ['chat_id'=>$chatId,
+        'text'=>"✅ Tercatat! {$emoji} Rp ".number_format($amt,0,',','.')." — {$desc}",
+        'reply_markup'=>json_encode(main_menu_kb($user))]);
 }
 
 /* ---------- Handler pesan teks ---------- */
@@ -298,33 +379,33 @@ function handle_message(array $msg) {
     if (preg_match('/^\/(start|bantuan|help)$/i', $text)) return ['text'=>main_menu_text($user),'kb'=>main_menu_kb($user)];
 
     // alur catat transaksi via tombol: user sedang menunggu input nominal/keterangan?
-    $flow = session_get($chatId);
+    $flow = bot_session_get($chatId);
     if (!empty($flow['step']) && !preg_match('/^\//', $text)) {
         if ($flow['step'] === 'amount') {
             $amtRaw = str_replace(['rp','.',' '], ['', '', ''], strtolower($text));
             $amt = (float)str_replace(',', '.', preg_replace('/[^\d,.]/', '', $amtRaw));
             if ($amt <= 0) return ['text'=>"Nominalnya belum tepat coy 😅 Contoh: 50000 atau 1.5jt format biasa juga boleh.",'kb'=>tx_amount_kb()];
             $flow['step'] = 'desc'; $flow['amount'] = $amt;
-            session_set($chatId, $flow);
+            bot_session_set($chatId, $flow);
             return ['text'=>"✍️ Untuk apa *{$flow['type']}* Rp ".number_format($amt,0,',','')."?\nTulis keterangannya (mis. beli beras)",'kb'=>['inline_keyboard'=>[[['text'=>'❌ Batal','callback_data'=>'tx:cancel']]]]];
         }
         if ($flow['step'] === 'desc') {
             $desc = mb_substr(trim($text), 0, 120);
             if ($desc === '') return ['text'=>"Keterangannya kosong — tulis dulu ya.",'kb'=>null];
-            if (!$user['business_id']) { session_clear($chatId); return ['text'=>"Akun kamu belum dipasangkan ke cabang. Hubungi bos.",'kb'=>null]; }
+            if (!$user['business_id']) { bot_session_clear($chatId); return ['text'=>"Akun kamu belum dipasangkan ke cabang. Hubungi bos.",'kb'=>null]; }
             add_transaction([
                 'type'=>$flow['type'],'amount'=>$flow['amount'],
                 'description'=>"$desc (via {$user['display_name']})",
                 'source'=>'bot_kariawan','user_id'=>$user['id'],
                 'business_id'=>(int)$user['business_id']]);
-            session_clear($chatId);
+            bot_session_clear($chatId);
             $biz = db()->query("SELECT name FROM businesses WHERE id={$user['business_id']}")->fetch()['name'] ?? '';
             $emoji = $flow['type'] === 'masuk' ? '🟢 MASUK' : '🔴 KELUAR';
             notify_owner("{$emoji} [{$biz}]\nRp ".number_format($flow['amount'],0,',','.')."\n$desc\nOleh: {$user['display_name']}");
             return ['text'=>"✅ Tercatat! {$emoji} Rp ".number_format($flow['amount'],0,',','.')." — $desc\n\nAda lagi? 👇",'kb'=>main_menu_kb($user)];
         }
         if ($flow['step'] === 'aiwait') {
-            session_clear($chatId);
+            bot_session_clear($chatId);
             return ['text'=>"🤖 ...\n".handle_ai_question($user, $text),'kb'=>ai_prompt_kb()];
         }
     }
@@ -421,26 +502,31 @@ function handle_callback(array $cb): void {
                     [['text'=>'❌ Batal','callback_data'=>'tx:cancel']],
                 ]]); $answer();
             } elseif ($arg === 'cancel') {
-                session_clear($chatId);
+                bot_session_clear($chatId);
                 $edit(main_menu_text($user), main_menu_kb($user)); $answer('Dibatalin');
             } elseif (str_starts_with($arg, 'type:')) {
                 $type = explode(':', $arg)[1] === 'masuk' ? 'masuk' : 'keluar';
-                session_set($chatId, ['step'=>'amount','type'=>$type]);
+                bot_session_set($chatId, ['step'=>'amount','type'=>$type]);
                 $edit("💵 {$type}: berapa nominalnya? Ketik angka, atau pakai tombol cepat:", tx_amount_kb());
                 $answer();
             }
             break;
 
         case 'txa': // nominal cepat
-            session_set($chatId, ['step'=>'desc','type'=>session_get($chatId)['type']??'keluar','amount'=>(float)$arg]);
-            $edit("✍️ Untuk apa *".(session_get($chatId)['type'])."* Rp ".number_format((float)$arg,0,',','')."?\nTulis keterangannya:",
+            bot_session_set($chatId, ['step'=>'desc','type'=>bot_session_get($chatId)['type']??'keluar','amount'=>(float)$arg]);
+            $edit("✍️ Untuk apa *".(bot_session_get($chatId)['type'])."* Rp ".number_format((float)$arg,0,',','')."?\nTulis keterangannya:",
                 ['inline_keyboard'=>[[['text'=>'❌ Batal','callback_data'=>'tx:cancel']]]]);
             $answer();
             break;
 
+        case 'rcpt': // konfirmasi struk dari foto
+            if (in_array($arg, ['masuk','keluar'], true)) { rcpt_confirm($user, $chatId, $arg); $answer(); }
+            else $answer();
+            break;
+
         case 'ai':
             if ($arg === 'start' || $arg === 'free') {
-                session_set($chatId, ['step'=>'aiwait']);
+                bot_session_set($chatId, ['step'=>'aiwait']);
                 $edit("🤖 *AI Asisten Keuangan*\nSilakan tanya apa saja soal keuanganmu — ketik pertanyaannya sekarang:", ai_prompt_kb());
                 $answer();
             }
@@ -492,6 +578,13 @@ function handle_callback(array $cb): void {
 function process_update(array $update): void {
     try {
         if (isset($update['callback_query'])) { handle_callback($update['callback_query']); return; }
+        if (!empty($update['message']['photo'])) { handle_photo($update['message']); return; }
+        // foto dikirim sebagai dokumen juga ditangani
+        if (str_starts_with((string)($update['message']['document']['mime_type'] ?? ''), 'image/')) {
+            $update['message']['photo'] = [['file_id' => $update['message']['document']['file_id']]];
+            handle_photo($update['message']);
+            return;
+        }
         if (!isset($update['message'])) return;
         $res = handle_message($update['message']);
         $p = ['chat_id'=>$update['message']['chat']['id'],'text'=>$res['text'],'parse_mode'=>'Markdown'];
