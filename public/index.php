@@ -46,6 +46,7 @@
     <button class="nav-item" data-p="liab"><span class="ic">💳</span>Utang &amp; Kartu</button>
     <button class="nav-item owner-only" data-p="payroll"><span class="ic">👥</span>Gaji Staf</button>
     <button class="nav-item owner-only" data-p="pajak"><span class="ic">🏛️</span>Pajak</button>
+    <button class="nav-item owner-only" data-p="assets"><span class="ic">🏭</span>Aset</button>
     <button class="nav-item owner-only" data-p="stok"><span class="ic">📦</span>Stok</button>
     <button class="nav-item owner-only" data-p="invoice"><span class="ic">🧾</span>Kwitansi</button>
         <button class="nav-item owner-only" data-p="appr"><span class="ic">🔔</span>Persetujuan</button>
@@ -403,6 +404,19 @@
       <div id="taxDueBanner"></div>
       <div class="panel table-card"><div class="data-table-wrap"><table id="tblTax"></table></div></div>
     </section>
+
+    <!-- ASET & PENYUSUTAN -->
+    <section id="p-assets" style="display:none">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px">
+        <div class="page-title"><h2>Aset &amp; Penyusutan</h2><p>Barang bernilai (kendaraan, mesin, peralatan). Penyusutan otomatis masuk jurnal bulanan — TIDAK mengurangi kas.</p></div>
+        <div>
+          <button class="btn btn-sm btn-green" onclick="depRun()">⚡ Susutkan Bulan Ini</button>
+          <button class="btn btn-sm" onclick="openAsset()">+ Aset Baru</button>
+          <button class="btn btn-sm" onclick="openImport()">📥 Import CSV Bank</button>
+        </div>
+      </div>
+      <div class="panel table-card"><div class="data-table-wrap"><table id="tblAssets"></table></div></div>
+    </section>
     </main>
   </div>
 </div>
@@ -571,12 +585,12 @@ document.querySelectorAll('.nav-item').forEach(b=>b.addEventListener('click',()=
 }));
 function renderPage(){
   document.querySelectorAll('.nav-item.owner-only').forEach(b=>b.style.display=(ME&&(ME.role==='owner'||(ME.role==='manajer'&&b.dataset.p==='appr')))?'':'none');
-  ['dashboard','transaksi','tagihan','target','anggaran','berulang','kas','cabang','laporan','akuntansi','piutang','liab','payroll','pajak','appr','audit','stok','invoice','pengaturan','panduan'].forEach(p=>{
+  ['dashboard','transaksi','tagihan','target','anggaran','berulang','kas','cabang','laporan','akuntansi','piutang','liab','payroll','pajak','assets','appr','audit','stok','invoice','pengaturan','panduan'].forEach(p=>{
     const el=$('p-'+p);if(el)el.style.display=p===view?'':'none';});
 if($('fCatF')&&!$('fCatF').options.length){$('fCatF').innerHTML='<option value="">Semua kategori</option>'+(meta?.categories||[]).map(c=>`<option>${esc(c.name)}</option>`).join('');}
     ({dashboard:(ME&&(ME.role==='kariawan'||ME.role==='manajer'))?renderBranch:renderDash,transaksi:loadTx,tagihan:loadBills,target:loadGoals,
     anggaran:loadBudgets,berulang:loadRec,kas:renderWallets,cabang:renderCabang,laporan:renderReport,
-    akuntansi:renderAkuntansi,piutang:()=>{loadRecv();loadAging();},liab:loadLiab,payroll:loadPayroll,pajak:loadTax,appr:loadAppr,audit:loadAudit,stok:loadProd,invoice:loadInv,
+    akuntansi:renderAkuntansi,piutang:()=>{loadRecv();loadAging();},liab:loadLiab,payroll:loadPayroll,pajak:loadTax,assets:loadAssets,appr:loadAppr,audit:loadAudit,stok:loadProd,invoice:loadInv,
     pengaturan:()=>{loadSettings();renderCatManager();loadRuleManager();loadClosedPeriods();},panduan:()=>{}}[view]||(()=>{}))();
 }
 
@@ -1802,6 +1816,79 @@ async function taxPay(id){
   if(!confirm('Bayar pajak ini? Kas akan otomatis berkurang.'))return;
   const d=await api('tax_monthly_pay',{id});
   if(d.ok){toast('Pajak dibayar ✅');loadTax();}else toast(d.error,true);
+}
+
+/* ===== ASET & PENYUSUTAN ===== */
+async function loadAssets(){
+  const d=await api('assets');if(d.error)return;
+  let h='<thead><tr><th>Aset</th><th>Cabang</th><th style="text-align:right">Harga</th><th style="text-align:right">/Bulan</th><th style="text-align:right">Tersusut</th><th style="text-align:right">Nilai Buku</th><th>Status</th><th></th></tr></thead><tbody>';
+  for(const r of d.rows){
+    h+=`<tr><td><b>${esc(r.name)}</b><br><span class="small">sejak ${r.acquired_at} • ${r.life_months} bln</span></td>
+     <td>${r.biz?esc(r.biz):'—'}</td>
+     <td style="text-align:right">${fmt(r.cost)}</td>
+     <td style="text-align:right">${fmt(r.monthly)}</td>
+     <td style="text-align:right" class="neg">-${fmt(r.dep_total)}</td>
+     <td style="text-align:right"><b>${fmt(r.book_value)}</b></td>
+     <td><span class="badge ${r.dep_this_month?'b-done':'b-wait'}">${r.dep_this_month?'tersusut':'belum'}</span></td>
+     <td><button class="btn btn-sm btn-red" onclick="assetDel(${r.id},'${esc(r.name).replace(/'/g,'')}')">🗑️</button></td></tr>`;
+  }
+  const tv=d.rows.reduce((s,r)=>s+ +r.book_value,0);
+  $('tblAssets').innerHTML=h+(d.rows.length
+    ?`<tfoot><tr><td colspan=5><b>Total nilai buku semua aset</b></td><td style="text-align:right"><b>${fmt(tv)}</b></td><td colspan=2></td></tr>`
+    :'<tr><td colspan=8 class=empty>Belum ada aset — klik "+ Aset Baru"</td></tr>')+'</tbody>';
+}
+function openAsset(){
+  $('modal').innerHTML=`<div class="modal-bg" onclick="if(event.target===this)closeModal()">
+   <div class="modal"><h1 style="font-size:17px">🏭 Aset Baru</h1>
+   <input id="asname" placeholder="Nama aset (mis. Motor Delivery)">
+   <div class="row2"><input id="ascost" type="number" placeholder="Harga beli">
+   <input id="assalv" type="number" placeholder="Nilai sisa (0 boleh)"></div>
+   <div class="row2"><input id="asdate" type="date" value="${new Date().toISOString().slice(0,10)}">
+   <input id="aslife" type="number" value="48" min="1" title="Masa pakai (bulan)"></div>
+   <select id="asbiz"><option value="">Pusat / pribadi</option>${meta.businesses.map(b=>`<option value="${b.id}">${esc(b.name)}</option>`).join('')}</select>
+   <button onclick="saveAsset()">Simpan</button><div id="merr" class="small neg" style="margin-top:8px"></div></div></div>`;
+}
+async function saveAsset(){
+  const d=await api('asset_add',{name:asname.value,cost:+(ascost.value||0),salvage:+(assalv.value||0),
+    acquired_at:asdate.value,life_months:+(aslife.value||48),business_id:asbiz.value||null});
+  if(d.error){merr.textContent=d.error;return;}
+  closeModal();toast('Aset tercatat 🏭');loadAssets();
+}
+async function assetDel(id,name){
+  if(!confirm(`Jadikan aset "${name}" tidak aktif?`))return;
+  const d=await api('asset_delete',{id});
+  if(d.ok){toast('Aset diarsipkan');loadAssets();}
+}
+async function depRun(){
+  const d=await api('asset_dep_run',{});
+  if(d.ok){toast(d.run?`${d.run} aset tersusutkan — total ${fmt(d.total)} ⚡`:'Semua aset sudah tersusutkan bulan ini');renderAkuntansi&&loadAssets();}
+  else toast(d.error,true);
+}
+
+/* ===== IMPORT CSV MUTASI BANK ===== */
+function openImport(){
+  $('modal').innerHTML=`<div class="modal-bg" onclick="if(event.target===this)closeModal()">
+   <div class="modal"><h1 style="font-size:17px">📥 Import Mutasi Bank (CSV)</h1>
+   <div class="sub">Format: <b>tanggal;keterangan;jumlah</b> (negatif = keluar) ATAU <b>tanggal;keterangan;masuk;keluar</b>. Baris dobel & periode tutup buku otomatis dilewati.</div>
+   <select id="imwall">${(summary?.wallets||[]).map(w=>`<option value="${w.id}" ${w.is_default?'selected':''}>${esc(w.name)} (${w.kind})</option>`).join('')}</select>
+   <div class="row2"><select id="imscope"><option value="usaha">Usaha</option><option value="pribadi">Pribadi</option></select>
+   <select id="imbiz"><option value="">Semua cabang / —</option>${meta.businesses.map(b=>`<option value="${b.id}">${esc(b.name)}</option>`).join('')}</select></div>
+   <input id="imfile" type="file" accept=".csv,text/csv">
+   <button onclick="doImport()">Import Sekarang</button><div id="merr" class="small neg" style="margin-top:8px"></div></div></div>`;
+}
+async function doImport(){
+  const f=$('imfile').files[0];
+  if(!f){merr.textContent='Pilih file CSV-nya dulu';return;}
+  const fd=new FormData();
+  fd.append('file',f);fd.append('wallet_id',imwall.value);fd.append('scope',imscope.value);fd.append('business_id',imbiz.value||'');
+  try{
+    const res=await fetch('/api.php?action=import_csv',{method:'POST',body:fd,credentials:'same-origin'});
+    const d=await res.json();
+    if(d.error){merr.textContent=d.error;return;}
+    closeModal();
+    toast(`Import selesai ✅ ${d.imported} masuk, ${d.skipped} dilewati`);
+    renderPage();
+  }catch(e){merr.textContent='Gagal upload: '+e.message;}
 }
 
 /* ===== LAPORAN ===== */

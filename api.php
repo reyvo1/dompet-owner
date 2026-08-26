@@ -901,6 +901,7 @@ case 'tx_list':
     if (!empty($input['from'])) { $sql .= " AND t.tx_date>=?"; $a[] = $input['from']; }
     if (!empty($input['to'])) { $sql .= " AND t.tx_date<=?"; $a[] = $input['to']; }
     if (!empty($input['q'])) { $sql .= " AND t.description LIKE ?"; $a[] = '%'.$input['q'].'%'; }
+    if (!empty($input['source'])) { $sql .= " AND t.source=?"; $a[] = $input['source']; }
     if (!empty($input['category'])) { $sql .= " AND c.name=?"; $a[] = $input['category']; }
     if (!empty($input['min_amount'])) { $sql .= " AND t.amount>=?"; $a[] = (float)$input['min_amount']; }
     if (!empty($input['max_amount'])) { $sql .= " AND t.amount<=?"; $a[] = (float)$input['max_amount']; }
@@ -1618,6 +1619,144 @@ case 'recv_aging':
     unset($r);
     usort($rows, fn($a, $b2) => ($b2['days_late'] ?? -1) <=> ($a['days_late'] ?? -1));
     out(['rows' => $rows, 'buckets' => $buckets]);
+
+/* ---------- ASET TETAP & PENYUSUTAN ---------- */
+case 'assets':
+    require_login();
+    $rows = db()->query("SELECT a.*, b.name biz FROM fixed_assets a LEFT JOIN businesses b ON b.id=a.business_id
+        WHERE a.active=1 ORDER BY a.id")->fetchAll();
+    foreach ($rows as &$r) {
+        // total penyusutan tercatat + nilai buku sekarang
+        $d = db()->prepare("SELECT COALESCE(SUM(amount),0) s FROM asset_deps WHERE asset_id=?");
+        $d->execute([$r['id']]);
+        $dep = (float)$d->fetch()['s'];
+        $r['dep_total'] = $dep;
+        $r['book_value'] = max((float)$r['salvage'], (float)$r['cost'] - $dep);
+        $r['monthly'] = ((float)$r['cost'] - (float)$r['salvage']) / max(1, (int)$r['life_months']);
+        // periode berjalan sudah disusutkan?
+        $c = db()->prepare("SELECT COUNT(*) c FROM asset_deps WHERE asset_id=? AND period=?");
+        $c->execute([$r['id'], date('Y-m')]);
+        $r['dep_this_month'] = (bool)$c->fetch()['c'];
+    }
+    unset($r);
+    out(['rows' => $rows]);
+
+case 'asset_add':
+    $u = require_login(); if ($u['role'] !== 'owner') out(['error' => 'Khusus owner'], 403);
+    $name = trim($input['name'] ?? '');
+    if ($name === '' || (float)($input['cost'] ?? 0) <= 0) out(['error' => 'Nama & harga beli wajib'], 422);
+    db()->prepare("INSERT INTO fixed_assets (business_id,name,acquired_at,cost,salvage,life_months)
+        VALUES (?,?,?,?,?,?)")->execute([
+        !empty($input['business_id']) ? (int)$input['business_id'] : null,
+        $name,
+        substr(preg_replace('/[^0-9-]/','',(string)($input['acquired_at'] ?? date('Y-m-d'))),0,10),
+        (float)$input['cost'],
+        (float)($input['salvage'] ?? 0),
+        max(1, (int)($input['life_months'] ?? 48))]);
+    out(['ok' => true, 'id' => (int)db()->lastInsertId()]);
+
+case 'asset_delete':
+    $u = require_login(); if ($u['role'] !== 'owner') out(['error' => 'Khusus owner'], 403);
+    db()->prepare("UPDATE fixed_assets SET active=0 WHERE id=?")->execute([(int)($input['id'] ?? 0)]);
+    out(['ok' => true]);
+
+case 'asset_dep_run':
+    // jalankan penyusutan bulan berjalan utk semua aset yang belum
+    $u = require_login(); if ($u['role'] !== 'owner') out(['error' => 'Khusus owner'], 403);
+    require_once __DIR__ . '/src/ledger.php';
+    $period = date('Y-m');
+    $done = 0; $total = 0.0;
+    foreach (db()->query("SELECT * FROM fixed_assets WHERE active=1") as $a) {
+        $chk = db()->prepare("SELECT COUNT(*) c FROM asset_deps WHERE asset_id=? AND period=?");
+        $chk->execute([$a['id'], $period]);
+        if ($chk->fetch()['c']) continue;
+        // jangan susut melebihi nilai sisa
+        $d = db()->prepare("SELECT COALESCE(SUM(amount),0) s FROM asset_deps WHERE asset_id=?");
+        $d->execute([$a['id']]);
+        $book = (float)$a['cost'] - (float)$d->fetch()['s'];
+        $amt = min($book - (float)$a['salvage'], ((float)$a['cost'] - (float)$a['salvage']) / max(1,(int)$a['life_months']));
+        if ($amt <= 0.005) continue;
+        $amt = round($amt, 2);
+        $eid = post_journal(date('Y-m-d'), "Penyusutan {$a['name']} ($period)", [
+            ['account'=>$a['dep_account'],'debit'=>$amt],
+            ['account'=>$a['asset_account'],'credit'=>$amt]], null);
+        db()->prepare("INSERT INTO asset_deps (asset_id,period,amount,entry_id) VALUES (?,?,?,?)")
+            ->execute([$a['id'], $period, $amt, $eid]);
+        $done++; $total += $amt;
+    }
+    out(['ok' => true, 'run' => $done, 'total' => $total, 'period' => $period]);
+
+/* ---------- IMPORT CSV MUTASI BANK ---------- */
+case 'import_csv':
+    $u = require_login(); if ($u['role'] !== 'owner') out(['error' => 'Khusus owner'], 403);
+    if (empty($_FILES['file']['tmp_name'])) out(['error' => 'File CSV tidak terkirim'], 422);
+    $handle = fopen($_FILES['file']['tmp_name'], 'r');
+    if (!$handle) out(['error' => 'File tidak bisa dibaca'], 422);
+    $walletId = (int)($_POST['wallet_id'] ?? 0);
+    $st = db()->prepare("SELECT * FROM wallets WHERE id=?"); $st->execute([$walletId]);
+    if (!$w = $st->fetch()) out(['error' => 'Pilih rekening tujuan dulu'], 422);
+    $scope = ($_POST['scope'] ?? 'usaha') === 'pribadi' ? 'pribadi' : 'usaha';
+    $biz = !empty($_POST['business_id']) ? (int)$_POST['business_id'] : null;
+    // auto-kategori: pakai smart rules kalau ada kecocokan
+    $rules = [];
+    foreach (db()->query("SELECT pattern, category_id FROM smart_rules") as $rl) $rules[strtolower($rl['pattern'])] = (int)$rl['category_id'];
+    $catStmt = db()->prepare("SELECT name FROM categories WHERE id=?");
+    $rowNum = 0; $okRows = 0; $skipRows = 0;
+    $pdo = db();
+    while (($csv = fgetcsv($handle, 0, ',', '"', '\\')) !== false) {
+        $rowNum++;
+        if ($rowNum === 1 && stripos(implode(',', $csv), 'tanggal') !== false) continue; // header
+        // format fleksibel: tanggal;keterangan;jumlah ATAU tanggal;keterangan;masuk;keluar
+        if (count($csv) < 3) { $skipRows++; continue; }
+        $tgl = trim($csv[0]); $ket = trim($csv[1]);
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $tgl)) {
+            $ts = strtotime(str_replace('/', '-', $tgl));
+            if (!$ts) { $skipRows++; continue; }
+            $tgl = date('Y-m-d', $ts);
+        }
+        if ($ket === '') { $skipRows++; continue; }
+        $amount = 0.0; $type = '';
+        if (count($csv) >= 4) {
+            $in = (float)str_replace([',','.00'], ['','.'], preg_replace('/[^\d,.]/','',trim($csv[2]) ?: '0'));
+            $out = (float)str_replace([',','.00'], ['','.'], preg_replace('/[^\d,.]/','',trim($csv[3]) ?: '0'));
+            if ($in > 0)      { $amount = $in;  $type = 'masuk'; }
+            elseif ($out > 0) { $amount = $out; $type = 'keluar'; }
+        } else {
+            $raw = str_replace(['Rp',' '], '', trim($csv[2]));
+            $neg = str_starts_with($raw, '-') || str_ends_with($raw, '-');
+            $amount = (float)str_replace([',','.00'], ['','.'], preg_replace('/[^\d,.]/','',$raw));
+            $type = $neg ? 'keluar' : 'masuk';
+        }
+        if ($amount <= 0 || !in_array($type, ['masuk','keluar'], true)) { $skipRows++; continue; }
+        // tutup buku check
+        $lockP = substr($tgl, 0, 7);
+        $lk = db()->prepare("SELECT COUNT(*) c FROM closed_periods WHERE period=?"); $lk->execute([$lockP]);
+        if ($lk->fetch()['c']) { $skipRows++; continue; }
+        // kategori otomatis dari smart rules
+        $cid = null;
+        foreach ($rules as $pat => $rid) {
+            if (stripos($ket, $pat) !== false) { $cid = $rid; break; }
+        }
+        $dup = db()->prepare("SELECT COUNT(*) c FROM transactions WHERE tx_date=? AND amount=? AND description=? AND wallet_id=?");
+        $dup->execute([$tgl, $amount, $ket, $walletId]);
+        if ($dup->fetch()['c']) { $skipRows++; continue; } // anti dobel
+        $pdo->beginTransaction();
+        try {
+            $ins = $pdo->prepare("INSERT INTO transactions (tx_date,type,amount,description,category_id,scope,business_id,wallet_id,source,user_id)
+                VALUES (?,?,?,?,?,?,?,?, 'import', ?)");
+            $ins->execute([$tgl, $type, $amount, $ket, $cid, $scope, $biz, $walletId, $u['id']]);
+            $sign = $type === 'masuk' ? 1 : -1;
+            $pdo->prepare("UPDATE wallets SET balance=balance+? WHERE id=?")->execute([$sign * $amount, $walletId]);
+            $pdo->commit();
+            $okRows++;
+        } catch (Throwable $e) {
+            $pdo->rollBack(); $skipRows++;
+        }
+    }
+    fclose($handle);
+    db()->prepare("INSERT INTO import_logs (filename,total_rows,ok_rows,skip_rows,created_by) VALUES (?,?,?,?,?)")
+        ->execute([substr((string)($_FILES['file']['name'] ?? ''), 0, 160), $okRows + $skipRows, $okRows, $skipRows, $u['id']]);
+    out(['ok' => true, 'imported' => $okRows, 'skipped' => $skipRows]);
 
 default:
     out(['error' => 'Action tidak dikenal'], 400);
