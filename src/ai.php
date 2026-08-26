@@ -82,14 +82,37 @@ function ai_read_receipt(string $imagePath): ?array {
             'tanggal'=>$d['tanggal'] ?? null, 'items'=>$d['items'] ?? []];
 }
 
+// riwayat chat per user utk memori konteks (maks 6 putar terakhir)
+function ai_history_get(int $userId): array {
+    $v = cfg("aimem:$userId");
+    return $v !== '' ? (json_decode($v, true) ?: []) : [];
+}
+function ai_history_push(int $userId, string $q, string $a): void {
+    $h = ai_history_get($userId);
+    $h[] = ['role'=>'user','text'=>$q];
+    $h[] = ['role'=>'model','text'=>mb_substr($a,0,800)];
+    $h = array_slice($h, -12); // 6 putar
+    set_cfg("aimem:$userId", json_encode($h));
+}
+function ai_history_clear(int $userId): void {
+    db()->prepare("DELETE FROM app_settings WHERE k=?")->execute(["aimem:$userId"]);
+}
+
 function ai_answer(string $question): string {
+    return ai_answer_ctx(0, $question);
+}
+function ai_answer_ctx(int $userId, string $question): string {
     $key = gemini_key();
     if ($key === '') return "API key Gemini belum dipasang. Minta bos isi dulu ya.";
-    $prompt = "Kamu asisten keuangan untuk seorang pemilik usaha (berbahasa Indonesia santai). "
+    $sys = "Kamu asisten keuangan untuk seorang pemilik usaha (berbahasa Indonesia santai). "
         . "Data keuangan terkini:\n" . finance_context()
-        . "\nPertanyaan bos: $question\nJawab singkat, jelas, pakai angka dari data. Beri saran bila relevan.";
+        . "\nJawab singkat, jelas, pakai angka dari data. Beri saran bila relevan.";
+    $contents = [];
+    foreach (ai_history_get($userId) as $h) $contents[] = ['role'=>$h['role'],'parts'=>[['text'=>$h['text']]]];
+    $contents[] = ['role'=>'user','parts'=>[['text'=>$question]]];
     $body = json_encode([
-        'contents' => [['parts' => [['text' => $prompt]]]],
+        'system_instruction' => ['parts' => [['text' => $sys]]],
+        'contents' => $contents,
         'generationConfig' => ['temperature' => 0.4, 'maxOutputTokens' => 500],
     ]);
     $ch = curl_init("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=" . urlencode($key));
@@ -104,6 +127,8 @@ function ai_answer(string $question): string {
     curl_close($ch);
     if (!$res) return "AI sedang tidak bisa dihubungi.";
     $j = json_decode($res, true);
-    return $j['candidates'][0]['content']['parts'][0]['text']
+    $ans = $j['candidates'][0]['content']['parts'][0]['text']
         ?? "AI tidak memberi jawaban. Coba lagi.";
+    if ($userId > 0 && !str_starts_with($ans, 'AI ')) ai_history_push($userId, $question, $ans);
+    return $ans;
 }

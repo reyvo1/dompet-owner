@@ -70,6 +70,7 @@ function ai_prompt_kb(): array {
         [['text'=>'💡 Saran buat bisnis saya?','callback_data'=>'aiq:saran']],
         [['text'=>'🔮 Proyeksi kas ke depan?','callback_data'=>'aiq:proyeksi']],
         [['text'=>'✍️ Tulis pertanyaanku sendiri','callback_data'=>'ai:free']],
+        [['text'=>'🧹 Lupakan obrolan','callback_data'=>'ai:forget']],
         [['text'=>'⬅️ Menu Utama','callback_data'=>'m:home']],
     ]];
 }
@@ -263,11 +264,12 @@ function ai_quick_answer(string $key): ?string {
     }
 }
 function handle_ai_question(array $user, string $q): string {
+    $prefix = '';
     if ($user['role'] !== 'owner') {
         // kariawan: konteks dibatasi cabangnya
-        $q = "[Kamu membantu kariawan cabang bernama {$user['display_name']}. Jangan ungkap data owner/pribadi.] " . $q;
+        $prefix = "[Kamu membantu kariawan cabang bernama {$user['display_name']}. Jangan ungkap data owner/pribadi.] ";
     }
-    return ai_answer($q);
+    return ai_answer_ctx((int)$user['id'], $prefix . $q);
 }
 
 /* ---------- FOTO STRUK: AI baca -> tombol konfirmasi ---------- */
@@ -524,7 +526,74 @@ function handle_callback(array $cb): void {
             else $answer();
             break;
 
+        case 'act': // aksi cepat dari pengingat: bayar gaji / pajak / tagih piutang (owner only)
+            if ($user['role'] !== 'owner') { $answer('Khusus owner'); return; }
+            [$kind, $id] = array_pad(explode(':', $arg), 2, 0);
+            $id = (int)$id;
+            if ($kind === 'payroll') {
+                $st = db()->prepare("SELECT p.*, e.name emp FROM payrolls p JOIN employees e ON e.id=p.employee_id WHERE p.id=? AND p.status='pending'");
+                $st->execute([$id]);
+                if (!$pr = $st->fetch()) { $answer('Sudah dibayar / tidak ada'); return; }
+                $net = (float)$pr['net_amount'];
+                $w = wallet_default();
+                $pdo = db(); $pdo->beginTransaction();
+                try {
+                    $ins = $pdo->prepare("INSERT INTO transactions (tx_date,type,amount,description,scope,business_id,wallet_id,source,user_id)
+                        VALUES (?, 'keluar', ?, ?, 'usaha', ?, ?, 'owner', ?)");
+                    $ins->execute([date('Y-m-d'), $net, "Gaji {$pr['emp']} ({$pr['period']}) [via Telegram]", 'usaha', $w['id'], $user['id']]);
+                    $txId = (int)$pdo->lastInsertId();
+                    $pdo->prepare("UPDATE transactions SET business_id=? WHERE id=?")->execute([(int)($pr['business_id'] ?? 0) ?: null, $txId]);
+                    $pdo->prepare("UPDATE wallets SET balance=balance-? WHERE id=?")->execute([$net, $w['id']]);
+                    $pdo->prepare("UPDATE payrolls SET status='paid', paid_at=NOW(), tx_id=? WHERE id=?")->execute([$txId, $id]);
+                    $pdo->commit();
+                } catch (Throwable $e) { $pdo->rollBack(); $answer('Gagal: '.$e->getMessage()); return; }
+                tg('editMessageText', ['chat_id'=>$chatId,'message_id'=>$msgId,
+                    'text'=>"✅ Gaji {$pr['emp']} dibayar — Rp ".number_format($net,0,',','.')]);
+                notify_owner("💸 Gaji {$pr['emp']} dibayar via Telegram: Rp ".number_format($net,0,',','.'));
+                audit_log($user,'payroll_run',"#{$id} {$pr['emp']} via Telegram",'payroll',$id,['status'=>'pending'],['status'=>'paid']);
+                $answer('Dibayar ✅');
+            } elseif ($kind === 'tax') {
+                $st = db()->prepare("SELECT * FROM tax_monthly WHERE id=? AND status='unpaid'");
+                $st->execute([$id]);
+                if (!$t = $st->fetch()) { $answer('Sudah dibayar / tidak ada'); return; }
+                $amt = (float)$t['amount'];
+                if ($amt <= 0) { $answer('Nominal 0'); return; }
+                $w = wallet_default();
+                $pdo = db(); $pdo->beginTransaction();
+                try {
+                    $ins = $pdo->prepare("INSERT INTO transactions (tx_date,type,amount,description,scope,business_id,wallet_id,source,user_id)
+                        VALUES (?, 'keluar', ?, ?, 'usaha', NULL, ?, 'owner', ?)");
+                    $ins->execute([date('Y-m-d'), $amt, "Bayar pajak {$t['tax_type']} ({$t['period']}) [via Telegram]", $w['id'], $user['id']]);
+                    $txId = (int)$pdo->lastInsertId();
+                    $pdo->prepare("UPDATE wallets SET balance=balance-? WHERE id=?")->execute([$amt, $w['id']]);
+                    $pdo->prepare("UPDATE tax_monthly SET status='paid', note=CONCAT_WS(' | ', note, ?) WHERE id=?")
+                        ->execute(['dibayar tx#'.$txId.' (Telegram)', $id]);
+                    $pdo->commit();
+                } catch (Throwable $e) { $pdo->rollBack(); $answer('Gagal: '.$e->getMessage()); return; }
+                tg('editMessageText', ['chat_id'=>$chatId,'message_id'=>$msgId,
+                    'text'=>"✅ Pajak {$t['tax_type']} ({$t['period']}) dibayar — Rp ".number_format($amt,0,',','.')]);
+                notify_owner("🏛️ Pajak dibayar via Telegram: Rp ".number_format($amt,0,',','.'));
+                audit_log($user,'tax_monthly_pay',"#{$id} via Telegram",'tax_monthly',$id,['status'=>'unpaid'],['status'=>'paid']);
+                $answer('Dibayar ✅');
+            } elseif ($kind === 'recv') {
+                $st = db()->prepare("SELECT * FROM receivables WHERE id=?");
+                $st->execute([$id]);
+                if (!$rc = $st->fetch()) { $answer('Tidak ada'); return; }
+                // tandai sudah ditagih: simpan note di kolom tx_id? gunakan audit saja
+                audit_log($user,'recv_remind',"{$rc['debtor_name']} ditandai sudah ditagih (via Telegram)",'receivable',$id,null,null);
+                tg('editMessageText', ['chat_id'=>$chatId,'message_id'=>$msgId,
+                    'text'=>"📝 Oke, {$rc['debtor_name']} ditandai SUDAH DITAGIH. Kas masuk otomatis saat pelunasan dicatat."]);
+                $answer('Dicatat');
+            } else $answer('?');
+            break;
+
         case 'ai':
+            if ($arg === 'forget') {
+                ai_history_clear((int)$user['id']);
+                $edit('🧹 Memori obrolan AI sudah dilupakan. Mulai segar lagi!', ai_prompt_kb());
+                $answer('Dilupakan');
+                break;
+            }
             if ($arg === 'start' || $arg === 'free') {
                 bot_session_set($chatId, ['step'=>'aiwait']);
                 $edit("🤖 *AI Asisten Keuangan*\nSilakan tanya apa saja soal keuanganmu — ketik pertanyaannya sekarang:", ai_prompt_kb());
