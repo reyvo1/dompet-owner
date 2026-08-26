@@ -1,6 +1,7 @@
 <?php
 // REST API Dompet Owner (dipakai dashboard web)
 require __DIR__ . '/src/config.php';
+session_set_cookie_params(['httponly' => true, 'samesite' => 'Lax']);
 session_start();
 header('Content-Type: application/json; charset=utf-8');
 
@@ -206,8 +207,10 @@ case 'tx_add':
     if (($u['role'] ?? '') !== 'owner') out(['error' => 'Khusus owner'], 403);
     // tutup buku: transaksi baru tidak boleh masuk periode terkunci
     if (!empty($input['tx_date'])) {
-        $lockP = substr((string)$input['tx_date'], 0, 7);
-        if (db()->query("SELECT COUNT(*) c FROM closed_periods WHERE period='$lockP'")->fetch()['c'])
+        $lockP = substr(preg_replace('/[^0-9-]/', '', (string)$input['tx_date']), 0, 7);
+            $chk = db()->prepare("SELECT COUNT(*) c FROM closed_periods WHERE period=?");
+            $chk->execute([$lockP]);
+            if ($chk->fetch()['c'])
             out(['error'=>"Periode {$lockP} sudah ditutup (terkunci)"],422);
     }
     $biz = !empty($input['business_id']) ? (int)$input['business_id'] : null;
