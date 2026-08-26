@@ -1435,6 +1435,153 @@ case 'cat_delete':
     }
     out(['ok' => true]);
 
+/* ---------- PAYROLL (gaji staf) ---------- */
+case 'emp_list':
+    require_login();
+    out(['rows' => db()->query("SELECT e.*, b.name biz FROM employees e LEFT JOIN businesses b ON b.id=e.business_id
+        WHERE e.active=1 ORDER BY e.name")->fetchAll()]);
+
+case 'emp_save':
+    $u = require_login(); if ($u['role'] !== 'owner') out(['error' => 'Khusus owner'], 403);
+    $name = trim($input['name'] ?? '');
+    if ($name === '') out(['error' => 'Nama staf wajib diisi'], 422);
+    $biz = !empty($input['business_id']) ? (int)$input['business_id'] : null;
+    $st = db()->prepare("INSERT INTO employees (business_id,name,position,base_salary,pay_day) VALUES (?,?,?,?,?)");
+    $st->execute([$biz, $name, trim($input['position'] ?? '') ?: null,
+        (float)($input['base_salary'] ?? 0), max(1, min(28, (int)($input['pay_day'] ?? 25)))]);
+    out(['ok' => true, 'id' => (int)db()->lastInsertId()]);
+
+case 'emp_delete':
+    $u = require_login(); if ($u['role'] !== 'owner') out(['error' => 'Khusus owner'], 403);
+    db()->prepare("UPDATE employees SET active=0 WHERE id=?")->execute([(int)($input['id'] ?? 0)]);
+    out(['ok' => true]);
+
+case 'payroll_list':
+    require_login();
+    $period = date('Y-m');
+    $st = db()->prepare("SELECT p.*, e.name emp, e.position pos, b.name biz FROM payrolls p
+         JOIN employees e ON e.id=p.employee_id LEFT JOIN businesses b ON b.id=e.business_id
+         WHERE p.period=? ORDER BY e.name");
+    $st->execute([$period]);
+    out(['period' => $period, 'rows' => $st->fetchAll()]);
+
+case 'payroll_run':
+    // jalankan gajian: catat pengeluaran kas + tandai lunak
+    $u = require_login(); if ($u['role'] !== 'owner') out(['error' => 'Khusus owner'], 403);
+    $id = (int)($input['id'] ?? 0);
+    $st = db()->prepare("SELECT p.*, e.name emp FROM payrolls p JOIN employees e ON e.id=p.employee_id WHERE p.id=?");
+    $st->execute([$id]);
+    if (!$p = $st->fetch()) out(['error' => 'Data gaji tidak ada'], 404);
+    if ($p['status'] === 'paid') out(['error' => 'Sudah dibayar'], 422);
+    $net = (float)$p['net_amount'];
+    if ($net <= 0) out(['error' => 'Nominal gaji tidak valid'], 422);
+    $w = wallet_default();
+    $pdo = db();
+    $pdo->beginTransaction();
+    try {
+        $ins = $pdo->prepare("INSERT INTO transactions (tx_date,type,amount,description,scope,wallet_id,source,user_id)
+            VALUES (?,?,?,?,?,?,?,?)");
+        $ins->execute([date('Y-m-d'), 'keluar', $net, "Gaji {$p['emp']} ({$p['period']})",
+            'usaha', $w['id'], 'owner', $u['id']]);
+        $txId = (int)$pdo->lastInsertId();
+        $pdo->prepare("UPDATE wallets SET balance=balance-? WHERE id=?")->execute([$net, $w['id']]);
+        $pdo->prepare("UPDATE payrolls SET status='paid', paid_at=NOW(), tx_id=? WHERE id=?")->execute([$txId, $id]);
+        $pdo->commit();
+    } catch (Throwable $e) {
+        $pdo->rollBack();
+        out(['error' => 'Gagal proses gaji: ' . $e->getMessage()], 500);
+    }
+    out(['ok' => true]);
+
+case 'payroll_generate':
+    // buat draft gaji bulan ini untuk semua staf aktif yang belum ada
+    $u = require_login(); if ($u['role'] !== 'owner') out(['error' => 'Khusus owner'], 403);
+    $period = date('Y-m');
+    $n = 0;
+    foreach (db()->query("SELECT * FROM employees WHERE active=1") as $e) {
+        $chk = db()->prepare("SELECT id FROM payrolls WHERE employee_id=? AND period=?");
+        $chk->execute([$e['id'], $period]);
+        if ($chk->fetch()) continue;
+        db()->prepare("INSERT INTO payrolls (employee_id,period,base_amount,net_amount,status)
+            VALUES (?,?,?,?, 'pending')")->execute([$e['id'], $period, (float)$e['base_salary'], (float)$e['base_salary']]);
+        $n++;
+    }
+    out(['ok' => true, 'created' => $n]);
+
+case 'payroll_adjust':
+    $u = require_login(); if ($u['role'] !== 'owner') out(['error' => 'Khusus owner'], 403);
+    $id = (int)($input['id'] ?? 0);
+    $bonus = max(0, (float)($input['bonus'] ?? 0));
+    $ded = max(0, (float)($input['deduction'] ?? 0));
+    $st = db()->prepare("SELECT base_amount,status FROM payrolls WHERE id=?"); $st->execute([$id]);
+    if (!$p = $st->fetch()) out(['error' => 'Data gaji tidak ada'], 404);
+    if ($p['status'] === 'paid') out(['error' => 'Sudah dibayar, tidak bisa diubah'], 422);
+    db()->prepare("UPDATE payrolls SET bonus_amount=?, deduction_amount=?, net_amount=GREATEST(0,base_amount+?-?) WHERE id=?")
+        ->execute([$bonus, $ded, $bonus, $ded, $id]);
+    out(['ok' => true]);
+
+/* ---------- REKAP PAJAK BULANAN ---------- */
+case 'tax_monthly':
+    require_login();
+    $rows = db()->query("SELECT * FROM tax_monthly ORDER BY period DESC, tax_type LIMIT 36")->fetchAll();
+    out(['rows' => $rows]);
+
+case 'tax_monthly_sync':
+    // tarik total dari tax_lines (hasil tax engine transaksi) ke rekap bulan berjalan
+    $u = require_login(); if ($u['role'] !== 'owner') out(['error' => 'Khusus owner'], 403);
+    $period = date('Y-m');
+    $n = 0;
+    $stT = db()->query("SELECT tl.tax_type, SUM(tl.tax_amount) total
+        FROM tax_lines tl JOIN transactions t ON t.id=tl.tx_id
+        WHERE DATE_FORMAT(t.tx_date,'%Y-%m')='$period'
+        GROUP BY tl.tax_type");
+    foreach ($stT as $r) {
+        if ((float)$r['total'] <= 0) continue;
+        db()->prepare("INSERT INTO tax_monthly (period,tax_type,amount) VALUES (?,?,?)
+            ON DUPLICATE KEY UPDATE amount=VALUES(amount)")
+            ->execute([$period, $r['tax_type'], (float)$r['total']]);
+        $n++;
+    }
+    out(['ok' => true, 'synced' => $n, 'period' => $period]);
+
+case 'tax_monthly_set':
+    $u = require_login(); if ($u['role'] !== 'owner') out(['error' => 'Khusus owner'], 403);
+    $period = preg_replace('/[^0-9-]/', '', (string)($input['period'] ?? date('Y-m')));
+    $type = in_array($input['tax_type'] ?? '', ['pbjt','pph_umkm','pph21','non_pajak'], true) ? $input['tax_type'] : 'non_pajak';
+    $due = !empty($input['due_date']) ? substr(preg_replace('/[^0-9-]/', '', (string)$input['due_date']), 0, 10) : null;
+    db()->prepare("INSERT INTO tax_monthly (period,tax_type,amount,due_date) VALUES (?,?,?,?)
+        ON DUPLICATE KEY UPDATE amount=VALUES(amount), due_date=VALUES(due_date)")
+        ->execute([$period, $type, (float)($input['amount'] ?? 0), $due]);
+    out(['ok' => true]);
+
+case 'tax_monthly_pay':
+    // bayar pajak: keluar kas + tandai lunas
+    $u = require_login(); if ($u['role'] !== 'owner') out(['error' => 'Khusus owner'], 403);
+    $id = (int)($input['id'] ?? 0);
+    $st = db()->prepare("SELECT * FROM tax_monthly WHERE id=?"); $st->execute([$id]);
+    if (!$t = $st->fetch()) out(['error' => 'Data pajak tidak ada'], 404);
+    if ($t['status'] === 'paid') out(['error' => 'Pajak sudah dibayar'], 422);
+    $amt = (float)$t['amount'];
+    if ($amt <= 0) out(['error' => 'Nominal pajak 0 — tidak perlu dibayar'], 422);
+    $w = wallet_default();
+    $pdo = db();
+    $pdo->beginTransaction();
+    try {
+        $ins = $pdo->prepare("INSERT INTO transactions (tx_date,type,amount,description,scope,wallet_id,source,user_id)
+            VALUES (?,?,?,?,?,?,?,?)");
+        $ins->execute([date('Y-m-d'), 'keluar', $amt, "Bayar pajak {$t['tax_type']} ({$t['period']})",
+            'usaha', $w['id'], 'owner', $u['id']]);
+        $txId = (int)$pdo->lastInsertId();
+        $pdo->prepare("UPDATE wallets SET balance=balance-? WHERE id=?")->execute([$amt, $w['id']]);
+        $pdo->prepare("UPDATE tax_monthly SET status='paid', note=CONCAT_WS(' | ', note, ?) WHERE id=?")
+            ->execute(['dibayar tx#'.$txId, $id]);
+        $pdo->commit();
+    } catch (Throwable $e) {
+        $pdo->rollBack();
+        out(['error' => 'Gagal bayar pajak: ' . $e->getMessage()], 500);
+    }
+    out(['ok' => true]);
+
 default:
     out(['error' => 'Action tidak dikenal'], 400);
 }
