@@ -94,6 +94,7 @@
         </div>
       </div>
       <div id="insightBox" style="margin-bottom:16px"></div>
+      <div id="healthBox" style="margin-bottom:16px"></div>
       <div id="dueBanner" style="margin-bottom:16px"></div>
       <div id="forecastBox"></div>
       <div id="walletStrip" style="display:flex;gap:10px;overflow-x:auto;margin-bottom:16px;padding-bottom:4px"></div>
@@ -465,7 +466,7 @@ function catColor(name){
 /* palet utk scope/cabang (bukan kategori DB) — konsisten dgn tema */
 const SCOPE_PALETTE=['#155eef','#16836f','#b86b00','#6675d8','#0891b2','#c54c5a','#8568d8','#38a58c','#d76aa8','#4ba8c7'];
 const scopeColor=i=>SCOPE_PALETTE[i%SCOPE_PALETTE.length];
-function toggleTheme(){document.documentElement.classList.toggle('dark');renderPage();}
+function toggleTheme(){document.documentElement.classList.toggle('dark');localStorage.setItem('themeManual','1');renderPage();}
 
 async function login(){const d=await api('login',{username:luser.value,password:lpass.value});
   if(d.error){$('lerr').textContent=d.error;return;} boot();}
@@ -876,7 +877,14 @@ async function loadDueBanner(){
 async function renderDash(){
   const s=(await api('summary',null,summaryQ()));if(s.error)return;summary=s;
   $('heroKas').textContent=fmt(s.total_kas);
-  loadInsight();loadCalendar();loadDueBanner();loadBudgetWarn();
+  loadInsight();loadCalendar();loadDueBanner();loadBudgetWarn();loadHealth();
+  // mode gelap otomatis jam 18:00-06:00 (kalau user belum pilih tema manual)
+  if(!localStorage.getItem('themeManual')){
+    const h=new Date().getHours();
+    const wantDark=h>=18||h<6;
+    if(wantDark!==document.documentElement.classList.contains('dark'))
+      document.documentElement.classList.toggle('dark',wantDark);
+  }
   // proyeksi arus kas + anomali
   const [fc,an]=await Promise.all([api('cashflow_forecast'),api('anomalies')]);
   const fcEl=$('forecastBox');
@@ -977,6 +985,33 @@ function renderDistribution(s){
 }
 
 /* ===== INSIGHT / SAFE TO SPEND ===== */
+/* ===== SKOR KESEHATAN KEUANGAN ===== */
+async function loadHealth(){
+  const d=await api('health_score');const el=$('healthBox');if(!el||d.error){if(el)el.innerHTML='';return;}
+  const col=d.score>=80?'#059669':(d.score>=60?'#d97706':(d.score>=40?'#ea580c':'#dc2626'));
+  const ring=2*Math.PI*42;
+  el.innerHTML=`<div class="panel" style="display:flex;gap:22px;align-items:center;flex-wrap:wrap">
+   <div style="position:relative;width:104px;height:104px;flex:none">
+    <svg width="104" height="104" style="transform:rotate(-90deg)">
+     <circle cx="52" cy="52" r="42" fill="none" stroke="var(--fd-border,#e5e7eb)" stroke-width="10"/>
+     <circle cx="52" cy="52" r="42" fill="none" stroke="${col}" stroke-width="10" stroke-linecap="round"
+      stroke-dasharray="${ring}" stroke-dashoffset="${ring*(1-d.score/100)}"/>
+    </svg>
+    <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center">
+     <b style="font-size:24px;color:${col}">${d.score}</b><span class="small">/100</span></div>
+   </div>
+   <div style="flex:1;min-width:220px">
+    <h3>❤️ Kesehatan Keuangan: <span style="color:${col}">${d.label}</span></h3>
+    <div class="small" style="margin:6px 0;display:flex;gap:12px;flex-wrap:wrap">
+      <span>💰 Tabungan ${d.components.tabungan}/30</span>
+      <span>🛟 Kas darurat ${d.components.kas_darurat}/25</span>
+      <span>🏦 Utang ${d.components.utang}/20</span>
+      <span>📋 Piutang ${d.components.piutang}/15</span>
+      <span>🧹 Disiplin ${d.components.disiplin}/10</span>
+    </div>
+    ${(d.tips||[]).map(t=>`<div class="small" style="margin-top:4px">💡 ${esc(t)}</div>`).join('')}
+   </div></div>`;
+}
 async function loadInsight(){
   const d=await api('insight');if(d.error){$('insightBox').innerHTML='';return;}
   let chips='';

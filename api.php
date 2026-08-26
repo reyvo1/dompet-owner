@@ -610,10 +610,14 @@ case 'appr_request':
     $id->execute([$u['id'],$u['business_id'],
         ($input['type']??'')==='masuk'?'masuk':'keluar',
         (float)($input['amount']??0), trim($input['description']??'')]);
-    notify_owner_force("PERMINTAAN PERSETUJUAN\nRp ".number_format((float)($input['amount']??0),0,',','.').
-        "\n".trim($input['description']??'')."\nOleh: {$u['display_name']}\nBuka dashboard -> Persetujuan");
+    notify_owner_force("PERMINTAAN PERSETUJUAN #{$id}\nRp ".number_format((float)($input['amount']??0),0,',','.').
+        "\n".trim($input['description']??'')."\nOleh: {$u['display_name']}",
+        ['inline_keyboard' => [[
+            ['text' => '✅ Setujui', 'callback_data' => "appr:{$id}:approve"],
+            ['text' => '❌ Tolak', 'callback_data' => "appr:{$id}:reject"],
+        ]]]);
     audit_log($u,'appr_request','Rp '.($input['amount']??0).' '.($input['description']??''),'approval',$id,null,['amount'=>(float)($input['amount']??0),'description'=>$input['description']??'']);
-    out(['ok'=>true,'id'=>(int)db()->lastInsertId()]);
+        out(['ok'=>true,'id'=>(int)db()->lastInsertId()]);
 
 case 'appr_decide':
     $u = require_login();
@@ -1851,6 +1855,53 @@ case 'fx_set':
         ON DUPLICATE KEY UPDATE rate=VALUES(rate), name=VALUES(name)")
         ->execute([$code, trim($input['name'] ?? '') ?: $code, $rate]);
     out(['ok' => true]);
+
+/* ---------- SKOR KESEHATAN KEUANGAN ---------- */
+case 'health_score':
+    require_login();
+    $period = date('Y-m');
+    // komponen & bobot total 100
+    $in  = (float)db()->query("SELECT COALESCE(SUM(amount),0) s FROM transactions WHERE type='masuk' AND DATE_FORMAT(tx_date,'%Y-%m')='$period'")->fetch()['s'];
+    $out = (float)db()->query("SELECT COALESCE(SUM(amount),0) s FROM transactions WHERE type='keluar' AND DATE_FORMAT(tx_date,'%Y-%m')='$period'")->fetch()['s'];
+    $kas = total_kas();
+    $liab = (float)db()->query("SELECT COALESCE(SUM(outstanding),0) s FROM liabilities WHERE active=1")->fetch()['s'];
+    $recvOpen = (float)db()->query("SELECT COALESCE(SUM(amount-paid_amount),0) s FROM receivables WHERE status<>'paid'")->fetch()['s'];
+    $overdueRecv = (int)db()->query("SELECT COUNT(*) c FROM receivables WHERE status<>'paid' AND due_date IS NOT NULL AND due_date < CURDATE()")->fetch()['c'];
+    $unpaidTax = (int)db()->query("SELECT COUNT(*) c FROM tax_monthly WHERE status='unpaid' AND due_date IS NOT NULL AND due_date < CURDATE()")->fetch()['c'];
+    $budgetOver = (int)db()->query("SELECT COUNT(*) c FROM budgets WHERE period='$period' AND amount>0 AND
+        (SELECT COALESCE(SUM(t.amount),0) FROM transactions t WHERE t.type='keluar' AND DATE_FORMAT(t.tx_date,'%Y-%m')='$period') > amount")->fetch()['c'];
+
+    $tips = [];
+    // 1. Rasio tabungan (30 poin): sisa >= 20% pendapatan
+    $saveRatio = $in > 0 ? ($in - $out) / $in : null;
+    if ($saveRatio === null)      { $s1 = 15; $tips[] = 'Belum ada pemasukan bulan ini — catat dulu biar skornya akurat.'; }
+    elseif ($saveRatio >= .2)     $s1 = 30;
+    elseif ($saveRatio >= .1)   { $s1 = 20; $tips[] = 'Tabunganmu di bawah 20% dari pendapatan — coba kurangi pengeluaran non-esensial.'; }
+    else                        { $s1 = 8;  $tips[] = 'Pengeluaran hampir habiskan pendapatan! Prioritaskan yang penting saja.'; }
+    // 2. Kas darurat (25 poin): kas >= 3x pengeluaran bulanan
+    $runway = $out > 0 ? $kas / $out : null;
+    if ($runway === null || $runway >= 3) $s2 = 25;
+    elseif ($runway >= 1)               { $s2 = 15; $tips[] = 'Kas cuma cukup ' . round($runway,1) . ' bulan — idealnya siapkan 3x pengeluaran bulanan.'; }
+    else                                { $s2 = 5;  $tips[] = 'Kas darurat tipis! Sisihkan sebagian pemasukan buat jaga-jaga.'; }
+    // 3. Utang (20 poin)
+    if ($liab <= 0) $s3 = 20;
+    elseif ($in > 0 && $liab <= $in * 2) { $s3 = 12; $tips[] = 'Utang masih terkendali, lunasi yang bunga besar dulu.'; }
+    else                                 { $s3 = 4;  $tips[] = 'Utang melebihi 2x pendapatan bulanan — hati-hati, prioritaskan pelunasan.'; }
+    // 4. Piutang tertahan (15 poin)
+    $s4 = $overdueRecv === 0 ? 15 : max(3, 15 - $overdueRecv * 4);
+    if ($overdueRecv > 0) $tips[] = "Ada $overdueRecv piutang lewat tempo — saatnya ditagih.";
+    // 5. Disiplin admin (10 poin): pajak & anggaran
+    $s5 = 10 - $unpaidTax * 5 - min(5, $budgetOver * 3);
+    $s5 = max(0, $s5);
+    if ($unpaidTax > 0) $tips[] = "$unpaidTax pajak lewat jatuh tempo — segera bayar biar tak kena denda.";
+    $score = max(0, min(100, round($s1 + $s2 + $s3 + $s4 + $s5)));
+    $label = $score >= 80 ? 'Sehat 💪' : ($score >= 60 ? 'Cukup 🙂' : ($score >= 40 ? 'Waspada 😐' : 'Butuh Perhatian ⚠️'));
+    out(['score' => $score, 'label' => $label,
+         'components' => ['tabungan'=>$s1,'kas_darurat'=>$s2,'utang'=>$s3,'piutang'=>$s4,'disiplin'=>$s5],
+         'metrics' => ['masuk'=>$in,'keluar'=>$out,'kas'=>$kas,'utang'=>$liab,
+                       'piutang_open'=>$recvOpen,'piutang_telat'=>$overdueRecv,
+                       'pajak_telat'=>$unpaidTax,'runway_bulan'=>round((float)$runway,1)],
+         'tips' => array_slice($tips, 0, 4)]);
 
 default:
     out(['error' => 'Action tidak dikenal'], 400);

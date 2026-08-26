@@ -192,8 +192,50 @@ function handle_message(array $msg): string {
 
 /* ---------- Runner ---------- */
 function process_update(array $update): void {
-    if (!isset($update['message'])) return;
     try {
+        // tombol inline (approve/tolak persetujuan dari chat)
+        if (isset($update['callback_query'])) {
+            $cb = $update['callback_query'];
+            $chatId = $cb['message']['chat']['id'] ?? '';
+            $user = find_user_by_chat((string)$chatId);
+            if (!$user || $user['role'] !== 'owner') {
+                tg('answerCallbackQuery', ['callback_query_id' => $cb['id'], 'text' => 'Khusus owner']);
+                return;
+            }
+            if (!preg_match('/^appr:(\d+):(approve|reject)$/', $cb['data'] ?? '', $m)) {
+                tg('answerCallbackQuery', ['callback_query_id' => $cb['id']]);
+                return;
+            }
+            $id = (int)$m[1]; $ok = $m[2] === 'approve';
+            $st = db()->prepare("SELECT a.*, us.display_name FROM approvals a LEFT JOIN users us ON us.id=a.user_id WHERE a.id=? AND a.status='pending'");
+            $st->execute([$id]);
+            if (!$ap = $st->fetch()) {
+                tg('answerCallbackQuery', ['callback_query_id' => $cb['id'], 'text' => 'Sudah diputuskan / tidak ada']);
+                return;
+            }
+            if ($ok) {
+                $bizId = $ap['business_id'] ? (int)$ap['business_id'] : null;
+                $txId = add_transaction(['type'=>$ap['type'],'amount'=>(float)$ap['amount'],
+                    'description'=>$ap['description'].' [disetujui via Telegram]','source'=>'approval',
+                    'user_id'=>$ap['user_id'],'business_id'=>$bizId,
+                    'scope'=>$bizId?'usaha':'pribadi']);
+                db()->prepare("UPDATE approvals SET status='approved',decided_by=?,decided_at=NOW(),tx_id=? WHERE id=?")
+                    ->execute([$user['id'],$txId,$id]);
+            } else {
+                db()->prepare("UPDATE approvals SET status='rejected',decided_by=?,decided_at=NOW() WHERE id=?")
+                    ->execute([$user['id'],$id]);
+            }
+            audit_log($user, 'appr_decide', "#{$id} " . ($ok ? 'approved' : 'rejected') . ' via Telegram', 'approval', $id,
+                ['status'=>'pending'], ['status'=>$ok?'approved':'rejected']);
+            tg('answerCallbackQuery', ['callback_query_id' => $cb['id'], 'text' => $ok ? '✅ Disetujui' : '❌ Ditolak']);
+            tg('editMessageText', [
+                'chat_id' => $chatId, 'message_id' => $cb['message']['message_id'],
+                'text' => ($ok ? '✅ DISETUJUI' : '❌ DITOLAK') . " — #{$id} {$ap['display_name']}\nRp "
+                    . number_format((float)$ap['amount'],0,',','.')." {$ap['description']}",
+            ]);
+            return;
+        }
+        if (!isset($update['message'])) return;
         $reply = handle_message($update['message']);
     } catch (Throwable $e) {
         $reply = "Terjadi kesalahan: " . $e->getMessage();
