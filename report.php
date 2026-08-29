@@ -17,6 +17,8 @@ $bulanNama = ['','Januari','Februari','Maret','April','Mei','Juni','Juli','Agust
 
 require_once __DIR__ . '/src/ledger.php';
 $pl = profit_loss($period);
+$bs = balance_sheet();
+$cf = cash_flow($period);
 
 function sumq(string $sql, array $a=[]): float {
     $st = db()->prepare($sql); $st->execute($a);
@@ -115,6 +117,25 @@ $piutangOpen   = (float)(db()->query("SELECT COALESCE(SUM(amount-paid_amount),0)
  $lbl=['pendapatan'=>'Pendapatan neto','hpp'=>'Harga Pokok Penjualan','beban'=>'Beban operasional','laba_bersih'=>'LABA BERSIH'][$k]; ?>
 <tr class="<?= $k==='laba_bersih'?'tot':'' ?>"><td><?= $lbl ?></td><td class="r <?= $k==='laba_bersih'?((float)$v>=0?'pos':'neg'):'' ?>"><?= $rp($v) ?></td></tr>
 <?php endforeach; ?>
+</table>
+
+<h2>Neraca (per hari ini)</h2>
+<table>
+<?php $isTot=false; foreach ($bs as $k => $v):
+  if(!is_string($k)) continue;
+  $kl=(string)$k; $isTot = str_contains($kl,'total') || str_contains($kl,'seimbang'); ?>
+<tr class="<?= $isTot?'tot':'' ?>"><td><?= ucfirst(str_replace('_',' ',$kl)) ?></td><td class="r"><?= $rp($v) ?></td></tr>
+<?php endforeach; ?>
+</table>
+
+<h2>Arus Kas (<?= $bulanNama ?>)</h2>
+<table>
+<?php foreach ($cf['per_kas'] as $r): ?>
+<tr><td>💵 <?= htmlspecialchars($r['name']) ?></td><td class="r <?= $r['net']>=0?'pos':'neg' ?>"><?= $rp($r['net']) ?></td></tr>
+<?php endforeach; ?>
+<tr class="tot"><td>Kas masuk</td><td class="r"><?= $rp($cf['masuk']) ?></td></tr>
+<tr class="tot"><td>Kas keluar</td><td class="r"><?= $rp($cf['keluar']) ?></td></tr>
+<tr class="tot"><td>ARUS KAS BERSIH</td><td class="r <?= $cf['bersih']>=0?'pos':'neg' ?>"><?= $rp($cf['bersih']) ?></td></tr>
 </table>
 
 <h2>10 Pengeluaran Terbesar</h2>

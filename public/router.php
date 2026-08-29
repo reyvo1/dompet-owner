@@ -8,6 +8,11 @@ if ($uri === '/api.php' || str_starts_with($uri, '/api.php?')) {
     require __DIR__ . '/../api.php';
     return true;
 }
+if ($uri === '/midtrans.php' || $uri === '/midtrans-notify.php') {
+    chdir(dirname(__DIR__));
+    require __DIR__ . '/../public/midtrans-webhook.php';
+    return true;
+}
 if ($uri === '/' || $uri === '/index.php') {
     chdir(__DIR__);
     include __DIR__ . '/index.php';

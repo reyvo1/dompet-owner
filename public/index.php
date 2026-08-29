@@ -8,7 +8,7 @@
 <link rel="manifest" href="manifest.json">
 <script src="vendor/chart.umd.min.js"></script>
 <link rel="stylesheet" href="fonts/fonts-local.css">
-<link rel="stylesheet" href="theme.css?v=f3">
+<link rel="stylesheet" href="theme.css?v=g3">
 </head>
 <body>
 
@@ -22,6 +22,7 @@
     </div>
     <input id="luser" placeholder="Username" autofocus>
     <input id="lpass" type="password" placeholder="Password">
+    <input id="lotp" placeholder="Kode OTP dari Telegram (6 digit)" style="display:none" inputmode="numeric" maxlength="6">
     <button onclick="login()" style="width:100%">Masuk ke Dashboard →</button>
     <div id="lerr" class="small neg" style="margin-top:10px"></div>
   </div>
@@ -50,6 +51,8 @@
     <button class="nav-item owner-only" data-p="petty"><span class="ic">🪙</span>Kas Kecil</button>
     <button class="nav-item owner-only" data-p="stok"><span class="ic">📦</span>Stok</button>
     <button class="nav-item owner-only" data-p="invoice"><span class="ic">🧾</span>Kwitansi</button>
+    <button class="nav-item owner-only" data-p="kontak"><span class="ic">📇</span>Kontak</button>
+    <button class="nav-item owner-only" data-p="absensi"><span class="ic">🧾</span>Absensi</button>
         <button class="nav-item owner-only" data-p="appr"><span class="ic">🔔</span>Persetujuan</button>
     <button class="nav-item owner-only" data-p="audit"><span class="ic">📜</span>Audit Log</button>
     <button class="nav-item owner-only" data-p="panduan"><span class="ic">🧭</span>Panduan</button>
@@ -98,6 +101,9 @@
       <div id="dueBanner" style="margin-bottom:16px"></div>
       <div id="forecastBox"></div>
       <div id="walletStrip" style="display:flex;gap:10px;overflow-x:auto;margin-bottom:16px;padding-bottom:4px"></div>
+      <div class="panel" style="margin-bottom:16px">
+        <h3 style="justify-content:space-between">🏆 Leaderboard Kariawan <span class="small" id="lbPeriod"></span></h3>
+        <div id="lbBox"></div></div>
       <div class="panel" style="margin-bottom:16px">
         <h3 style="justify-content:space-between">📅 Kalender Keuangan (45 hari)
           <span id="calTotal" class="small"></span></h3>
@@ -198,8 +204,12 @@
     <section id="p-kas" style="display:none">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px">
         <div class="page-title"><h2>Rekening &amp; Kas</h2><p>Semua uangmu: tunai, bank, e-wallet. Total = kekayaan bersih.</p></div>
-        <button class="btn btn-sm" onclick="openWallet()">+ Rekening</button></div>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-sm secondary" onclick="openRecon()">🔍 Rekonsiliasi</button>
+          <button class="btn btn-sm" onclick="openWallet()">+ Rekening</button></div></div>
       <div class="kpi-grid" id="walletCards"></div>
+      <h3 style="margin:20px 0 10px;font-size:15px">🔍 Riwayat Rekonsiliasi</h3>
+      <div class="panel table-card"><div class="data-table-wrap"><table id="tblRecon"></table></div></div>
     </section>
 
     <!-- STOK -->
@@ -208,14 +218,37 @@
         <div class="page-title"><h2>Stok Barang</h2><p>Jual/beli barang otomatis mencatat kas &amp; stok</p></div>
         <button class="btn btn-sm" onclick="openProd()">+ Barang</button></div>
       <div class="panel table-card"><div class="data-table-wrap"><table id="tblProd"></table></div></div>
+      <h3 style="margin:20px 0 10px;font-size:15px">💰 Laba per Produk (dari mutasi stok tercatat)</h3>
+      <div class="panel table-card"><div class="data-table-wrap"><table id="tblProfit"></table></div></div>
     </section>
 
     <!-- KWITANSI -->
     <section id="p-invoice" style="display:none">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px">
         <div class="page-title"><h2>Kwitansi / Invoice</h2><p>Buat kwitansi digital, cetak atau kirim link ke pelanggan</p></div>
-        <button class="btn btn-sm" onclick="openInv()">+ Kwitansi</button></div>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-sm secondary" onclick="openRinv()">🔁 Langganan</button>
+          <button class="btn btn-sm" onclick="openInv()">+ Kwitansi</button></div></div>
       <div class="panel table-card"><div class="data-table-wrap"><table id="tblInv"></table></div></div>
+      <h3 style="margin:20px 0 10px;font-size:15px">🔁 Kwitansi Langganan (otomatis tiap jatuh tempo)</h3>
+      <div class="panel table-card"><div class="data-table-wrap"><table id="tblRinv"></table></div></div>
+    </section>
+
+    <!-- KONTAK -->
+    <section id="p-kontak" style="display:none">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px">
+        <div class="page-title"><h2>Kontak</h2><p>Pelanggan &amp; pemasok — riwayat omzet otomatis dari kwitansi</p></div>
+        <button class="btn btn-sm" onclick="openContact()">+ Kontak</button></div>
+      <div class="panel table-card"><div class="data-table-wrap"><table id="tblContact"></table></div></div>
+    </section>
+
+    <!-- ABSENSI -->
+    <section id="p-absensi" style="display:none">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px">
+        <div class="page-title"><h2>Absensi Kariawan</h2><p>Check-in/out via tombol 🧾 di bot. Lembur dihitung otomatis di atas 8 jam.</p></div>
+        <button class="btn btn-sm" onclick="attRunNow()">↻ Muat Ulang</button></div>
+      <div class="kpi-grid" id="attKpi"></div>
+      <div class="panel table-card"><div class="data-table-wrap"><table id="tblAtt"></table></div></div>
     </section>
 
     <!-- PERSETUJUAN -->
@@ -287,6 +320,39 @@
         </div>
 
         <div class="panel">
+          <h3>💬 Notifikasi WhatsApp</h3>
+          <div class="small" style="margin-bottom:12px">Pakai layanan <b>Fonnte</b> (fonnte.com) atau sejenis. Notif WA dikirim paralel dengan Telegram.</div>
+          <label class="small" style="display:flex;gap:7px;align-items:center;padding:4px 0">
+            <input type="checkbox" id="sWaEn" style="width:auto;margin:0"> Aktifkan notifikasi WhatsApp</label>
+          <input id="sWaToken" placeholder="Token device WA (dari dashboard Fonnte)">
+          <input id="sWaTarget" placeholder="No. WA tujuan default (62xxx)">
+          <input id="sWaEndpoint" placeholder="Endpoint API (default https://api.fonnte.com/send)">
+          <div style="display:flex;gap:8px;margin-top:8px">
+            <button class="btn btn-sm" onclick="saveSettings()">💾 Simpan</button>
+            <button class="btn btn-sm btn-green" onclick="testWA()">🔌 Kirim Pesan Tes WA</button></div>
+          <div id="waStatus" class="small" style="margin-top:10px"></div>
+        </div>
+
+        <div class="panel">
+          <h3>🔐 Keamanan Login</h3>
+          <div class="small" style="margin-bottom:12px">Proteksi brute-force + OTP via Telegram (2FA).</div>
+          <input id="sMaxFail" type="number" placeholder="Batas login gagal (default 5)" title="Setelah ini IP/username dikunci 15 menit">
+          <label class="small" style="display:flex;gap:7px;align-items:center;padding:6px 0">
+            <input type="checkbox" id="sTwofa" style="width:auto;margin:0"> OTP Telegram saat login web (2FA)</label>
+          <div class="small neg" style="margin:4px 0 10px">⚠️ Wajib: chat Telegram owner sudah terikat (bot pernah /start) — OTP dikirim lewat bot.</div>
+          <button class="btn btn-sm" onclick="saveSecurity()">💾 Simpan Keamanan</button>
+        </div>
+
+        <div class="panel">
+          <h3>💳 Payment Gateway (Midtrans)</h3>
+          <div class="small" style="margin-bottom:12px">QRIS dinamis di kwitansi + status lunas otomatis. Ambil Server Key di dashboard.midtrans.com (Settings → API Keys). Sandbox: <code>sk-sandbox-...</code></div>
+          <input id="sMidServer" placeholder="Server Key (sk-sandbox-... / sk-prod-...)">
+          <input id="sMidClient" placeholder="Client Key (opsional, utk Snap popup)">
+          <button class="btn btn-sm" style="margin-top:6px" onclick="saveMid()">💾 Simpan Midtrans</button>
+          <div class="small" style="margin-top:10px">Webhook notification URL (isi di dashboard Midtrans):<br><code id="midWebhook">— diisi setelah deploy ke domain —</code></div>
+        </div>
+
+        <div class="panel">
           <h3>🔒 Ganti Password</h3>
           <div class="small" style="margin-bottom:12px">Password akun owner ini (login web)</div>
           <input id="pwCur" type="password" placeholder="Password sekarang">
@@ -302,6 +368,26 @@
           <div class="row2"><input id="cbPeriod" placeholder="YYYY-MM (misal 2026-07)"><button class="btn btn-sm" onclick="closeBook()">🔒 Kunci</button></div>
           <div id="cbList" class="small" style="margin-top:12px"></div>
           <div id="cbStatus" class="small" style="margin-top:8px"></div>
+        </div>
+
+        <div class="panel">
+          <h3>🧾 QRIS Kwitansi</h3>
+          <div class="small" style="margin-bottom:12px">Teks/nomor yang diubah jadi QR di halaman kwitansi (QRIS merchant, no. rekening, atau link pembayaran).</div>
+          <textarea id="sQris" rows="3" placeholder="Contoh QRIS payload / 0002010102... atau: BCA 1234567890 a.n. Budi"></textarea>
+          <button class="btn btn-sm" style="margin-top:6px" onclick="saveQris()">💾 Simpan QRIS</button>
+        </div>
+
+        <div class="panel">
+          <h3>💱 Kurs Otomatis &amp; Backup Cloud</h3>
+          <div class="small" style="margin-bottom:12px">Kurs USD/CNY/SGD/JPY ditarik otomatis tiap hari dari open.er-api.com. Backup DB + kirim ke cloud via perintah bebas (rclone/kopia/bat), <code>{file}</code> diganti path dump.</div>
+          <label class="small" style="display:flex;gap:7px;align-items:center;padding:4px 0">
+            <input type="checkbox" id="sFxAuto" style="width:auto;margin:0"> Kurs otomatis harian</label>
+          <input id="sCloudCmd" placeholder='Perintah cloud, mis: rclone copy {file} gdrive:backup-dompet'>
+          <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+            <button class="btn btn-sm" onclick="saveCloudFx()">💾 Simpan</button>
+            <button class="btn btn-sm secondary" onclick="fxNow()">💱 Tarik Kurs Sekarang</button>
+            <button class="btn btn-sm btn-green" onclick="runBackupCloud()">☁️ Backup + Kirim Cloud</button></div>
+          <div id="fxStatus" class="small" style="margin-top:10px"></div>
         </div>
       </div>
 
@@ -392,6 +478,24 @@
         </div>
       </div>
       <div class="panel table-card"><div class="data-table-wrap"><table id="tblPayroll"></table></div></div>
+
+      <div class="grid g2" style="margin-top:16px">
+        <div class="panel">
+          <h3 style="justify-content:space-between">💰 Kasbon Kariawan <span class="small" id="advTotal"></span></h3>
+          <div class="small" style="margin-bottom:10px">Kasbon otomatis terpotong saat "Buat Gajian Bulan Ini". Bisa juga dilunasi tunai.</div>
+          <div id="advList"></div>
+          <button class="btn btn-sm" style="margin-top:12px" onclick="openAdv()">+ Kasbon Baru</button>
+        </div>
+        <div class="panel">
+          <h3 style="justify-content:space-between">🏆 Komisi Penjualan <span class="small" id="commPeriod"></span></h3>
+          <div class="small" style="margin-bottom:10px">Set rule %, lalu transaksi penjualan kariawan otomatis menghasilkan komisi → jadi bonus gajian.</div>
+          <div id="commList"></div>
+          <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+            <button class="btn btn-sm" onclick="openCommRule()">+ Rule Komisi</button>
+            <button class="btn btn-sm btn-green" onclick="commApply()">⚡ Masukkan Komisi ke Gajian</button>
+          </div>
+        </div>
+      </div>
     </section>
 
     <!-- PAJAK -->
@@ -468,8 +572,12 @@ const SCOPE_PALETTE=['#155eef','#16836f','#b86b00','#6675d8','#0891b2','#c54c5a'
 const scopeColor=i=>SCOPE_PALETTE[i%SCOPE_PALETTE.length];
 function toggleTheme(){document.documentElement.classList.toggle('dark');localStorage.setItem('themeManual','1');renderPage();}
 
-async function login(){const d=await api('login',{username:luser.value,password:lpass.value});
-  if(d.error){$('lerr').textContent=d.error;return;} boot();}
+async function login(){
+  const otp = $('lotp').value.trim();
+  const d=await api(otp?'login_otp':'login', otp?{code:otp}:{username:luser.value,password:lpass.value});
+  if(d.otp_required){ $('lotp').style.display='block';$('lotp').focus();
+    $('lerr').style.color='var(--fd-success,#16836f)';$('lerr').textContent='🔐 '+d.msg;return;}
+  if(d.error){$('lerr').style.color='';$('lerr').textContent=d.error;return;} boot();}
 async function logout(){await api('logout');location.reload();}
 
 let ME=null; // profil user yang login (owner/kariawan)
@@ -514,7 +622,7 @@ function setupManajer(){
 async function renderBranch(){
   const d=await api('summary_branch');
   if(d.error){$('tblRecent').innerHTML=`<tr><td class=empty>${esc(d.error)}</td></tr>`;return;}
-  BR=d;
+  BR=d;loadLeaderboard();
   $('heroKas').textContent=fmt(d.today.selisih);
   $('pageTitle').textContent='Cabang: '+(d.branch?.name||'');
   // kartu ringkas
@@ -602,12 +710,12 @@ document.querySelectorAll('.nav-item').forEach(b=>b.addEventListener('click',()=
 }));
 function renderPage(){
   document.querySelectorAll('.nav-item.owner-only').forEach(b=>b.style.display=(ME&&(ME.role==='owner'||(ME.role==='manajer'&&b.dataset.p==='appr')))?'':'none');
-  ['dashboard','transaksi','tagihan','target','anggaran','berulang','kas','cabang','laporan','akuntansi','piutang','liab','payroll','pajak','assets','petty','appr','audit','stok','invoice','pengaturan','panduan'].forEach(p=>{
+  ['dashboard','transaksi','tagihan','target','anggaran','berulang','kas','cabang','laporan','akuntansi','piutang','liab','payroll','pajak','assets','petty','appr','audit','stok','invoice','kontak','absensi','pengaturan','panduan'].forEach(p=>{
     const el=$('p-'+p);if(el)el.style.display=p===view?'':'none';});
 if($('fCatF')&&!$('fCatF').options.length){$('fCatF').innerHTML='<option value="">Semua kategori</option>'+(meta?.categories||[]).map(c=>`<option>${esc(c.name)}</option>`).join('');}
     ({dashboard:(ME&&(ME.role==='kariawan'||ME.role==='manajer'))?renderBranch:renderDash,transaksi:loadTx,tagihan:loadBills,target:loadGoals,
     anggaran:loadBudgets,berulang:loadRec,kas:renderWallets,cabang:renderCabang,laporan:renderReport,
-    akuntansi:renderAkuntansi,piutang:()=>{loadRecv();loadAging();},liab:loadLiab,payroll:loadPayroll,pajak:loadTax,assets:loadAssets,petty:loadPetty,appr:loadAppr,audit:loadAudit,stok:loadProd,invoice:loadInv,
+    akuntansi:renderAkuntansi,piutang:()=>{loadRecv();loadAging();},liab:loadLiab,payroll:loadPayroll,pajak:loadTax,assets:loadAssets,petty:loadPetty,appr:loadAppr,audit:loadAudit,stok:loadProd,invoice:loadInv,kontak:loadContacts,absensi:loadAtt,
     pengaturan:()=>{loadSettings();renderCatManager();loadRuleManager();loadClosedPeriods();},panduan:()=>{}}[view]||(()=>{}))();
 }
 
@@ -750,6 +858,7 @@ async function loadProd(){
        <button class="btn btn-sm btn-red" onclick="delProd(${r.id})">✕</button></td></tr>`;
   }
   $('tblProd').innerHTML=h+'</tbody>'||'<tr><td colspan=6 class=empty>Belum ada barang</td></tr>';
+  loadProdProfit();
 }
 const float=v=>parseFloat(v)||0;
 function openProd(){
@@ -775,12 +884,14 @@ function moveStock(id,dir,name){
   $('modal').innerHTML=`<div class="modal-bg" onclick="if(event.target===this)closeModal()">
    <div class="modal"><h1 style="font-size:17px">${dir==='in'?'📥 Stok Masuk':'📤 Stok Keluar'} — ${esc(name)}</h1>
     <input id="sqty" type="number" placeholder="Jumlah">
+    <input id="sprice" type="number" placeholder="Harga per unit (kosongkan = pakai harga standar)">
     ${dir==='out'?'<label class="small" style="display:flex;gap:7px;align-items:center;padding:6px 0"><input type="checkbox" id="smktx" checked style="width:auto"> Catat juga sebagai penjualan (masuk kas)</label>':'<label class="small" style="display:flex;gap:7px;align-items:center;padding:6px 0"><input type="checkbox" id="smktx" checked style="width:auto"> Catat juga sebagai pembelian (keluar kas)</label>'}
     <button onclick="doMove(${id},'${dir}')">Simpan</button><div id="merr" class="small neg" style="margin-top:8px"></div></div></div>`;
 }
 async function doMove(id,dir){
   if(!sqty.value){merr.textContent='Isi jumlah';return;}
-  const d=await api('stock_move',{product_id:id,direction:dir,qty:+sqty.value,make_transaction:smktx.checked});
+  const d=await api('stock_move',{product_id:id,direction:dir,qty:+sqty.value,make_transaction:smktx.checked,
+    unit_price:sprice&&sprice.value?+sprice.value:null});
   if(d.error){merr.textContent=d.error;return;}
   closeModal();toast('Stok diperbarui ✅');loadProd();renderPage();
 }
@@ -795,20 +906,58 @@ async function loadInv(){
      <td style="text-align:right;font-weight:700">${fmt(r.amount)}</td>
      <td>${r.status==='paid'?'<span class="badge b-done">LUNAS</span>':r.status==='void'?'<span class="badge b-keluar">BATAL</span>':'<span class="badge b-wait">BELUM</span>'}</td>
      <td style="white-space:nowrap"><a href="invoice.php?id=${r.id}" target="_blank" class="btn btn-sm secondary" style="text-decoration:none">🖨️ Cetak</a>
+       ${r.status==='unpaid'&&r.snap_url?`<button class="btn btn-sm btn-green" onclick="payOnline('${esc(r.snap_url)}')">⚡ Bayar Online</button>`:''}
        ${r.status==='unpaid'?`<button class="btn btn-sm btn-green" onclick="payInv(${r.id})">💵 Lunasi</button>`:''}</td></tr>`;
   }
   $('tblInv').innerHTML=h+'</tbody>'||'<tr><td colspan=5 class=empty>Belum ada kwitansi</td></tr>';
+  loadRinv();
 }
-function openInv(){
+function payOnline(url){window.open(url,'_blank','width=430,height=740');}
+async function loadRinv(){
+  const el=$('tblRinv');if(!el)return;
+  const d=await api('rinv_list');if(d.error)return;
+  let h='<thead><tr><th>Pelanggan</th><th>Nominal</th><th>Frekuensi</th><th>Jatuh Tempo Berikut</th><th></th></tr></thead><tbody>';
+  for(const r of d.rows){
+    h+=`<tr><td><b>${esc(r.customer_name)}</b>${r.biz?`<br><span class="small">${esc(r.biz)}</span>`:''}${r.description?`<br><span class="small">${esc(r.description)}</span>`:''}</td>
+     <td style="text-align:right;font-weight:700">${fmt(r.amount)}</td>
+     <td>${r.frequency==='weekly'?'Mingguan':'Bulanan'}</td>
+     <td>${r.next_date}${r.next_date<=d.today?' <span class="badge b-wait">due</span>':''}</td>
+     <td><button class="btn btn-sm btn-red" onclick="delRinv(${r.id})">✕</button></td></tr>`;
+  }
+  el.innerHTML=h+(d.rows.length?'':'<tr><td colspan=5 class=empty>Belum ada langganan — pas untuk sewa, cleaning service, langganan tetap</td></tr>')+'</tbody>';
+}
+function openRinv(){
+  $('modal').innerHTML=`<div class="modal-bg" onclick="if(event.target===this)closeModal()">
+   <div class="modal"><h1 style="font-size:17px">🔁 Kwitansi Langganan</h1>
+    <div class="small" style="margin-bottom:8px">Kwitansi dibuat otomatis tiap jatuh tempo + notifikasi ke kamu.</div>
+    <input id="ricust" placeholder="Nama pelanggan">
+    <div class="row2"><input id="riamt" type="number" placeholder="Nominal per tagihan"><select id="rifreq"><option value="monthly">Bulanan</option><option value="weekly">Mingguan</option></select></div>
+    <div class="row2"><input id="ridate" type="date" value="${new Date().toISOString().slice(0,10)}"><select id="ribiz"><option value="">Pribadi / pusat</option>${meta.businesses.map(b=>`<option value="${b.id}">${esc(b.name)}</option>`).join('')}</select></div>
+    <input id="ridesc" placeholder="Keterangan (misal: Sewa ruko bulan X)">
+    <button onclick="saveRinv()">Simpan Langganan</button><div id="merr" class="small neg" style="margin-top:8px"></div></div></div>`;
+}
+async function saveRinv(){
+  const d=await api('rinv_add',{customer_name:ricust.value,amount:+(riamt.value||0),frequency:rifreq.value,
+    next_date:ridate.value,business_id:ribiz.value||null,description:ridesc.value});
+  if(d.error){merr.textContent=d.error;return;}
+  closeModal();toast('Langganan tersimpan 🔁');loadInv();
+}
+async function delRinv(id){if(!confirm('Hapus langganan ini?'))return;
+  const d=await api('rinv_delete',{id});d.ok?(toast('Terhapus'),loadRinv()):toast(d.error);}
+async function openInv(){
+  const c=await api('contact_list');
+  const opts=(c.rows||[]).map(x=>`<option value="${x.id}">${esc(x.name)}${x.phone?' • '+esc(x.phone):''}</option>`).join('');
   $('modal').innerHTML=`<div class="modal-bg" onclick="if(event.target===this)closeModal()">
    <div class="modal"><h1 style="font-size:17px">🧾 Kwitansi Baru</h1>
-    <input id="icust" placeholder="Nama pelanggan">
+    <select id="icontact"><option value="">— kontak baru (ketik nama di bawah) —</option>${opts}</select>
+    <input id="icust" placeholder="Nama pelanggan" oninput="icontact.value=''">
     <input id="iamt" type="number" placeholder="Nominal (contoh 250000)">
     <textarea id="idesc" rows="3" placeholder="Keterangan (untuk pembayaran apa)"></textarea>
     <button onclick="saveInv()">Buat Kwitansi</button><div id="merr" class="small neg" style="margin-top:8px"></div></div></div>`;
 }
 async function saveInv(){
-  const d=await api('inv_create',{customer_name:icust.value,amount:+(iamt.value||0),description:idesc.value});
+  const d=await api('inv_create',{customer_name:icust.value,amount:+(iamt.value||0),description:idesc.value,
+    contact_id:icontact.value||null});
   if(d.error){merr.textContent=d.error;return;}
   closeModal();toast('Kwitansi dibuat ✅');loadInv();
 }
@@ -877,7 +1026,7 @@ async function loadDueBanner(){
 async function renderDash(){
   const s=(await api('summary',null,summaryQ()));if(s.error)return;summary=s;
   $('heroKas').textContent=fmt(s.total_kas);
-  loadInsight();loadCalendar();loadDueBanner();loadBudgetWarn();loadHealth();
+  loadInsight();loadCalendar();loadDueBanner();loadBudgetWarn();loadHealth();loadLeaderboard();
   // mode gelap otomatis jam 18:00-06:00 (kalau user belum pilih tema manual)
   if(!localStorage.getItem('themeManual')){
     const h=new Date().getHours();
@@ -1416,6 +1565,7 @@ async function renderWallets(){
      <button class="btn btn-sm btn-red" onclick="delWallet(${w.id})">🗑️</button></div></div>`).join('')
    +`<div class="kpi-card" style="display:flex;flex-direction:column;justify-content:center;cursor:pointer;border-style:dashed;text-align:center"
        onclick="openWallet()"><div style="font-size:30px">＋</div><div class="kpi-note">Tambah rekening baru</div></div>`;
+  loadRecon();
 }
 function openWallet(){
   $('modal').innerHTML=`<div class="modal-bg" onclick="if(event.target===this)closeModal()">
@@ -1512,8 +1662,22 @@ async function loadSettings(){
   if(d.big_tx_limit)sBigTx.placeholder='Batas sekarang: Rp '+(+d.big_tx_limit).toLocaleString('id-ID');
   sNotifyTx.checked=d.notify_transactions==='1';
   sNotifyBill.checked=d.notify_bills==='1';
+  sWaEn.checked=d.wa_enabled==='1';
+  sWaToken.placeholder=d.wa_token_set?('Tersimpan: '+d.wa_token_masked):'Token device WA (dari dashboard Fonnte)';
+  sWaTarget.value=d.wa_target||'';
+  sWaEndpoint.value=d.wa_endpoint||'https://api.fonnte.com/send';
+  sQris.value=d.qris_text||'';
+  sFxAuto.checked=d.fx_auto==='1';
+  sCloudCmd.value=d.cloud_backup_cmd||'';
+  if(d.login_max_fail)sMaxFail.value=d.login_max_fail;
+  sMidServer.placeholder=(d.midtrans_server_key_set?'Tersimpan: '+d.midtrans_server_key_masked:'Server Key (sk-sandbox-... / sk-prod-...)');
+  sMidClient.value=(d.midtrans_client_key&&d.midtrans_client_key.includes('••'))?'':(d.midtrans_client_key||'');
+  midWebhook.textContent=location.origin+'/midtrans.php';
   tgStatus.textContent=d.bot_token_set?'🟢 Bot token sudah terpasang'+(d.bot_username?' (@'+d.bot_username+')':''):'⚪ Token belum diisi';
   aiStatus.textContent=d.gemini_key_set?'🟢 API key Gemini terpasang':'⚪ Gemini key belum diisi';
+  // status 2FA akun sendiri
+  const me2=await api('me');
+  if(me2&&!me2.error){const t=me2.user.twofa?1:0;if($('sTwofa'))$('sTwofa').checked=!!t;}
 }
 async function saveSettings(){
   const d=await api('settings_set',{
@@ -1521,9 +1685,51 @@ async function saveSettings(){
     owner_chat_id:sChatId.value,
     gemini_key:(sGemini.value&&sGemini.value.includes('••'))?undefined:sGemini.value,
     notify_transactions:sNotifyTx.checked?'1':'0',
-    notify_bills:sNotifyBill.checked?'1':'0'});
+    notify_bills:sNotifyBill.checked?'1':'0',
+    wa_enabled:sWaEn.checked?'1':'0',
+    wa_token:(sWaToken.value&&sWaToken.value.includes('••'))?undefined:sWaToken.value,
+    wa_target:sWaTarget.value,
+    wa_endpoint:sWaEndpoint.value});
   if(d.ok)toast('Pengaturan tersimpan ✅');else toast(d.error);
   loadSettings();
+}
+async function saveSecurity(){
+  const mf=+(sMaxFail.value||5);
+  const d1=await api('settings_set',{login_max_fail:String(mf)});
+  const d2=await api('otp_toggle');
+  toast(d1.ok&&d2.ok?('Keamanan tersimpan — 2FA '+(d2.twofa?'AKTIF 🔐':'mati')):(d1.error||d2.error||'Gagal'),!(d1.ok&&d2.ok));
+}
+async function saveMid(){
+  const d=await api('settings_set',{
+    midtrans_server_key:(sMidServer.value&&sMidServer.value.includes('••'))?undefined:sMidServer.value,
+    midtrans_client_key:(sMidClient.value&&sMidClient.value.includes('••'))?undefined:sMidClient.value});
+  d.ok?toast('Midtrans tersimpan 💳'):toast(d.error,true);
+  loadSettings();
+}
+async function saveQris(){
+  const d=await api('settings_set',{qris_text:sQris.value});
+  d.ok?toast('QRIS tersimpan ✅'):toast(d.error,true);
+}
+async function saveCloudFx(){
+  const d=await api('settings_set',{fx_auto:sFxAuto.checked?'1':'0',cloud_backup_cmd:sCloudCmd.value});
+  d.ok?toast('Tersimpan ✅'):toast(d.error,true);
+}
+async function testWA(){
+  await saveSettings();
+  waStatus.textContent='⏳ Mengirim pesan tes...';
+  const d=await api('wa_test');
+  waStatus.innerHTML=(d.ok&&d.ok!=='false'?'🟢 ':'🔴 ')+esc(d.msg||d.error||'');
+}
+async function fxNow(){
+  fxStatus.textContent='⏳ Menarik kurs...';
+  const d=await api('fx_fetch');
+  if(d.ok)fxStatus.innerHTML='🟢 Kurs diperbarui: '+d.updated.map(u=>u.code+' '+fmt(u.rate)).join(' • ');
+  else fxStatus.textContent='🔴 '+(d.error||'Gagal');
+}
+async function runBackupCloud(){
+  const st=$('fxStatus');st.textContent='⏳ Backup DB + kirim ke cloud...';
+  const d=await api('backup_cloud');
+  st.innerHTML=d.ok?'🟢 Backup selesai — cloud: '+esc(d.cloud||'ok'):'🔴 '+esc(d.detail||d.error||'Gagal');
 }
 async function testTG(){
   await saveSettings();
@@ -1744,6 +1950,7 @@ async function payRecv(id,sisa){
 async function loadPayroll(){
   const [d,e]=await Promise.all([api('payroll_list'),api('emp_list')]);
   if(d.error)return;
+  EMPS=e.rows||[];
   let h='<thead><tr><th>Staf</th><th>Cabang</th><th style="text-align:right">Pokok</th><th style="text-align:right">Bonus</th><th style="text-align:right">Potongan</th><th style="text-align:right">Dibayar</th><th>Status</th><th>Aksi</th></tr></thead><tbody>';
   for(const r of d.rows){
     const paid=r.status==='paid';
@@ -1759,6 +1966,7 @@ async function loadPayroll(){
   }
   $('tblPayroll').innerHTML=h+(d.rows.length?'':'<tr><td colspan=8 class=empty>Belum ada gajian — klik "Buat Gajian Bulan Ini"</td></tr>')+'</tbody>'
     +`<tfoot><tr><td colspan=3><button class="btn btn-sm" onclick="payGenerate()">${e.rows&&!e.rows.length?'Tambah staf dulu →':'⚡ Generate ulang (staf belum masuk)'}</button></td></tr>`;
+  loadAdv();loadComm();
 }
 function openEmp(){
   $('modal').innerHTML=`<div class="modal-bg" onclick="if(event.target===this)closeModal()">
@@ -1796,6 +2004,208 @@ async function slipLink(id){
   const d=await api('payslip_link',{id});
   if(d.ok){window.open(d.url.replace(/^/,'/'),'_blank');}
   else toast(d.error,true);
+}
+
+/* ===== KONTAK (CRM LITE) ===== */
+async function loadContacts(){
+  const d=await api('contact_list');if(d.error)return;
+  const K={customer:'🛒 Pelanggan',supplier:'🚚 Pemasok',both:'🔄 Keduanya'};
+  let h='<thead><tr><th>Kontak</th><th>Jenis</th><th>Telepon</th><th style="text-align:right">Kwitansi</th><th style="text-align:right">Omzet</th><th></th></tr></thead><tbody>';
+  for(const r of d.rows){
+    h+=`<tr><td><b>${esc(r.name)}</b>${r.biz?`<br><span class="small">${esc(r.biz)}</span>`:''}</td>
+     <td class="small">${K[r.kind]||r.kind}</td>
+     <td class="small">${esc(r.phone||'—')}</td>
+     <td style="text-align:right">${r.n_inv||0}</td>
+     <td style="text-align:right;font-weight:700">${fmt(r.omzet)}</td>
+     <td><button class="btn btn-sm btn-red" onclick="delContact(${r.id})">✕</button></td></tr>`;
+  }
+  $('tblContact').innerHTML=h+(d.rows.length?'':'<tr><td colspan=6 class=empty>Belum ada kontak — simpan pelanggan/pemasok rutin biar gampang lacak</td></tr>')+'</tbody>';
+}
+function openContact(){
+  $('modal').innerHTML=`<div class="modal-bg" onclick="if(event.target===this)closeModal()">
+   <div class="modal"><h1 style="font-size:17px">📇 Kontak Baru</h1>
+    <input id="ktname" placeholder="Nama (toko/personal)">
+    <div class="row2">
+      <select id="ktkind"><option value="customer">🛒 Pelanggan</option><option value="supplier">🚚 Pemasok</option><option value="both">🔄 Keduanya</option></select>
+      <input id="ktphone" placeholder="No. WA/telepon"></div>
+    <select id="ktbiz"><option value="">Semua cabang</option>${meta.businesses.map(b=>`<option value="${b.id}">${esc(b.name)}</option>`).join('')}</select>
+    <input id="ktnote" placeholder="Catatan (opsional)">
+    <button onclick="saveContact()">Simpan</button><div id="merr" class="small neg" style="margin-top:8px"></div></div></div>`;
+}
+async function saveContact(){
+  const d=await api('contact_add',{name:ktname.value,kind:ktkind.value,phone:ktphone.value,
+    business_id:ktbiz.value||null,note:ktnote.value});
+  if(d.error){merr.textContent=d.error;return;}
+  closeModal();toast('Kontak tersimpan ✅');loadContacts();
+}
+async function delContact(id){if(!confirm('Hapus kontak ini?'))return;
+  const d=await api('contact_delete',{id});d.ok?(toast('Terhapus'),loadContacts()):toast(d.error);}
+
+/* ===== ABSENSI ===== */
+async function loadAtt(){
+  const d=await api('att_list');if(d.error)return;
+  $('attKpi').innerHTML=`
+   <div class="kpi-card"><div class="kpi-head"><div class="kpi-label">Hari Kerja Terdata (${d.period})</div><div class="kpi-icon blue">📅</div></div>
+     <div class="kpi-value">${d.total_hari}</div></div>
+   <div class="kpi-card"><div class="kpi-head"><div class="kpi-label">Total Lembur (menit)</div><div class="kpi-icon violet">🔥</div></div>
+     <div class="kpi-value">${d.total_lembur_min}</div>
+     <div class="kpi-note">${(d.total_lembur_min/60).toFixed(1)} jam</div></div>
+   <div class="kpi-card"><div class="kpi-head"><div class="kpi-label">Check-in/out</div><div class="kpi-icon green">🧾</div></div>
+     <div class="kpi-note" style="margin-top:6px">Via tombol 🧾 Absen di bot — lembur dihitung otomatis di atas 8 jam/hari</div></div>`;
+  let h='<thead><tr><th>Tanggal</th><th>Nama</th><th>Masuk</th><th>Keluar</th><th style="text-align:right">Durasi</th><th style="text-align:right">Lembur</th></tr></thead><tbody>';
+  for(const r of d.rows){
+    h+=`<tr><td>${r.work_date}</td><td><b>${esc(r.display_name)}</b></td>
+     <td>${r.check_in?r.check_in.slice(11,16):'—'}</td><td>${r.check_out?r.check_out.slice(11,16):'—'}</td>
+     <td style="text-align:right">${r.minutes!=null?(r.minutes>=60?Math.floor(r.minutes/60)+' j '+(r.minutes%60)+' m':r.minutes+' m'):'⏳'}</td>
+     <td style="text-align:right" class="${+r.overtime_min>0?'pos':''}">${+r.overtime_min?r.overtime_min+' m 🔥':'—'}</td></tr>`;
+  }
+  $('tblAtt').innerHTML=h+(d.rows.length?'':'<tr><td colspan=6 class=empty>Belum ada absensi bulan ini</td></tr>')+'</tbody>';
+}
+async function attRunNow(){await loadAtt();toast('Diperbarui ✅');}
+
+/* ===== KASBON KARIAWAN ===== */
+async function loadAdv(){
+  const d=await api('adv_list');if(d.error)return;
+  $('advTotal').textContent=d.total_open?('Total belum lunas: '+fmt(d.total_open)):'';
+  const S={open:'<span class="badge b-wait">open</span>',payroll:'<span class="badge b-transfer">di gajian</span>'};
+  $('advList').innerHTML=d.rows.length?d.rows.map(a=>`<div class="rank-row"><div class="rank-copy">
+    <div class="rank-index" style="font-size:13px;background:var(--fd-surface-2)">💰</div>
+    <div class="rank-name"><strong>${esc(a.emp)} — ${fmt(a.amount)}</strong>
+      <span>${a.advance_date}${a.reason?' • '+esc(a.reason):''}${a.biz?' • '+esc(a.biz):''}</span></div>
+    <div style="display:flex;gap:6px;align-items:center">${S[a.status]||''}
+      ${a.status==='open'?`<button class="btn btn-sm btn-green" onclick="advSettle(${a.id},'${esc(a.emp)}',${a.amount})">💵 Lunas tunai</button>`:''}
+      ${a.status==='open'?`<button class="btn btn-sm btn-red" onclick="advDel(${a.id})">↩️ Batal</button>`:''}</div>
+    </div></div>`).join(''):'<div class="empty">Tidak ada kasbon berjalan 🎉</div>';
+}
+function openAdv(){
+  const emps=EMPS||[];
+  $('modal').innerHTML=`<div class="modal-bg" onclick="if(event.target===this)closeModal()">
+   <div class="modal"><h1 style="font-size:17px">💰 Kasbon Kariawan</h1>
+    <div class="small" style="margin-bottom:8px">Kas keluar sekarang; otomatis terpotong saat gajian, atau lunasi tunai kapan saja.</div>
+    <select id="avemp"><option value="">— pilih staf —</option>${emps.map(e=>`<option value="${e.id}">${esc(e.name)}${e.biz?' • '+esc(e.biz):''}</option>`).join('')}</select>
+    <div class="row2"><input id="avamt" type="number" placeholder="Nominal kasbon"><input id="avdate" type="date" value="${new Date().toISOString().slice(0,10)}"></div>
+    <input id="avreason" placeholder="Alasan (opsional)">
+    <button onclick="saveAdv()">Simpan Kasbon</button><div id="merr" class="small neg" style="margin-top:8px"></div></div></div>`;
+}
+async function saveAdv(){
+  if(!avemp.value){merr.textContent='Pilih staf dulu';return;}
+  const d=await api('adv_add',{employee_id:+avemp.value,amount:+(avamt.value||0),advance_date:avdate.value,reason:avreason.value});
+  if(d.error){merr.textContent=d.error;return;}
+  closeModal();toast('Kasbon dicatat — kas berkurang 💸');loadPayroll();renderPage();
+}
+async function advSettle(id,name,amt){
+  const v=prompt(`Kasbon ${name} — nominal dilunasi tunai sekarang:`,amt);if(v===null)return;
+  const d=await api('adv_settle',{id,amount:+v});
+  if(d.ok){toast('Kasbon dilunasi — kas bertambah 💵');loadPayroll();renderPage();}else toast(d.error,true);
+}
+async function advDel(id){
+  if(!confirm('Batalkan kasbon ini? Kas yang keluar tadi dikembalikan otomatis.'))return;
+  const d=await api('adv_del',{id});
+  if(d.ok){toast('Kasbon dibatalkan');loadPayroll();renderPage();}else toast(d.error,true);
+}
+
+/* ===== KOMISI PENJUALAN ===== */
+async function loadComm(){
+  const d=await api('comm_list');if(d.error)return;
+  $('commPeriod').textContent='Periode '+d.period;
+  $('commList').innerHTML=d.pending.length?d.pending.map(c=>`<div class="rank-row"><div class="rank-copy">
+    <div class="rank-index" style="font-size:13px;background:var(--fd-surface-2)">🏆</div>
+    <div class="rank-name"><strong>${esc(c.emp_name||c.display_name)} — ${fmt(c.total)}</strong>
+      <span>${c.n_tx} transaksi penjualan${c.emp_name?'':' • staf belum ada di payroll'}</span></div></div></div>`).join('')
+    :'<div class="empty">Belum ada komisi pending bulan ini</div>';
+}
+async function openCommRule(){
+  const r=await api('comm_rules');
+  $('modal').innerHTML=`<div class="modal-bg" onclick="if(event.target===this)closeModal()">
+   <div class="modal"><h1 style="font-size:17px">🏆 Rule Komisi Penjualan</h1>
+    <div class="small" style="margin-bottom:8px">Contoh: kategori "Penjualan" → 3%. Rule kategori spesifik menang di atas rule umum.</div>
+    <div class="row2"><input id="crpct" type="number" step="0.1" placeholder="Komisi % (misal 3)"><select id="crcat"><option value="">Semua kategori</option>${meta.categories.map(c=>`<option>${esc(c.name)}</option>`).join('')}</select></div>
+    <select id="crbiz"><option value="">Semua cabang</option>${meta.businesses.map(b=>`<option value="${b.id}">${esc(b.name)}</option>`).join('')}</select>
+    <button onclick="saveCommRule()">Simpan Rule</button><div id="merr" class="small neg" style="margin-top:8px"></div>
+    <hr style="border:none;border-top:1px solid var(--fd-border);margin:14px 0">
+    <div>${(r.rows||[]).map(x=>`<div class="rank-row"><div class="rank-copy"><div class="rank-name">
+      <strong>${x.pct}% — ${esc(x.biz||'semua cabang')} • ${esc(x.cat||'semua kategori')}</strong></div></div>
+      <button class="btn btn-sm btn-red" onclick="delCommRule(${x.id})">✕</button></div>`).join('')||'<div class="empty">Belum ada rule</div>'}</div></div></div>`;
+}
+async function saveCommRule(){
+  if(!crpct.value){merr.textContent='Isi persen komisi';return;}
+  const d=await api('comm_rule_add',{pct:+crpct.value,category:crcat.value||null,business_id:crbiz.value||null});
+  if(d.error){merr.textContent=d.error;return;}
+  toast('Rule komisi tersimpan 🏆');openCommRule();
+}
+async function delCommRule(id){const d=await api('comm_rule_delete',{id});d.ok?openCommRule():toast(d.error,true);}
+async function commApply(){
+  if(!confirm('Masukkan semua komisi pending bulan ini sebagai bonus di gajian?'))return;
+  const d=await api('comm_apply');
+  if(d.ok){toast(d.applied?`Komisi masuk gajian ${d.applied} staf ⚡`:'Tidak ada staf bersangkutan di payroll');loadPayroll();}
+  else toast(d.error,true);
+}
+
+/* ===== REKONSILIASI ===== */
+async function loadRecon(){
+  const el=$('tblRecon');if(!el)return;
+  const d=await api('recon_list');if(d.error)return;
+  let h='<thead><tr><th>Tanggal</th><th>Rekening</th><th style="text-align:right">Buku</th><th style="text-align:right">Fisik</th><th style="text-align:right">Selisih</th><th>Koreksi</th></tr></thead><tbody>';
+  for(const r of d.rows){
+    const dg=+r.diff;
+    h+=`<tr><td>${r.recon_date}</td><td><b>${esc(r.wallet)}</b>${r.note?`<br><span class="small">${esc(r.note)}</span>`:''}</td>
+     <td style="text-align:right">${fmt(r.book_balance)}</td><td style="text-align:right">${fmt(r.actual_balance)}</td>
+     <td style="text-align:right" class="${dg>0?'pos':dg<0?'neg':''}">${dg?fmt(dg):'✓ cocok'}</td>
+     <td>${+r.adjusted?'<span class="badge b-done">ya</span>':'<span class="badge">tidak</span>'}</td></tr>`;
+  }
+  el.innerHTML=h+(d.rows.length?'':'<tr><td colspan=6 class=empty>Belum ada riwayat rekonsiliasi — cocokkan hitungan fisik vs aplikasi</td></tr>')+'</tbody>';
+}
+async function openRecon(){
+  const s=await api('summary',null,summaryQ());if(s.error)return;
+  $('modal').innerHTML=`<div class="modal-bg" onclick="if(event.target===this)closeModal()">
+   <div class="modal"><h1 style="font-size:17px">🔍 Rekonsiliasi Kas</h1>
+    <div class="small" style="margin-bottom:8px">Hitung uang fisik/di ATM, isi di bawah. Kalau beda, sistem bisa buat transaksi koreksi otomatis.</div>
+    <select id="rcwallet2"><option value="">— pilih rekening —</option>${s.wallets.map(w=>`<option value="${w.id}">${esc(w.name)} (buku: ${fmt(w.balance)})</option>`).join('')}</select>
+    <input id="rcactual" type="number" placeholder="Saldo fisik sebenarnya (Rp)">
+    <label class="small" style="display:flex;gap:7px;align-items:center;padding:6px 0">
+      <input type="checkbox" id="rcadjust" checked style="width:auto"> Buat transaksi koreksi otomatis kalau selisih</label>
+    <input id="rcnote2" placeholder="Catatan (opsional)">
+    <button onclick="saveRecon()">Simpan Hasil Hitung</button><div id="merr" class="small neg" style="margin-top:8px"></div></div></div>`;
+}
+async function saveRecon(){
+  if(!rcwallet2.value){merr.textContent='Pilih rekening dulu';return;}
+  if(!rcactual.value){merr.textContent='Isi saldo fisik';return;}
+  const d=await api('recon_add',{wallet_id:+rcwallet2.value,actual_balance:+rcactual.value,adjust:rcadjust.checked?1:0,note:rcnote2.value});
+  if(d.error){merr.textContent=d.error;return;}
+  closeModal();
+  toast(d.diff?`Selisih ${fmt(d.diff)} ${d.adjusted?'— dikoreksi ✅':'— dicatat (tanpa koreksi)'}`:'Pas! Tidak ada selisih ✅');
+  renderPage();
+}
+
+/* ===== LEADERBOARD KARIAWAN ===== */
+async function loadLeaderboard(){
+  const el=$('lbBox');if(!el)return;
+  const d=await api('leaderboard');if(d.error)return;
+  $('lbPeriod').textContent='Periode '+d.period;
+  if(!d.rows.length){el.innerHTML='<div class="empty">Belum ada penjualan kariawan bulan ini</div>';return;}
+  const medal=['🥇','🥈','🥉'];
+  el.innerHTML=d.rows.slice(0,8).map(r=>`<div class="rank-row" style="${d.me&&r.rank===d.me.rank?'background:var(--fd-surface-2);border-radius:10px':''}">
+    <div class="rank-index">${medal[r.rank-1]||('#'+r.rank)}</div>
+    <div class="rank-copy"><div class="rank-name"><strong>${esc(r.display_name)}</strong>${r.biz?` <span class="small">${esc(r.biz)}</span>`:''}
+      <span>${r.n_tx} transaksi${r.komisi?` • komisi ${fmt(r.komisi)}`:''}</span></div></div>
+    <div style="text-align:right"><b>${fmt(r.omzet)}</b></div></div>`).join('')
+    +(d.me?`<div class="small" style="margin-top:8px">Peringkatmu: <b>#${d.me.rank}</b> — ${fmt(d.me.omzet)}</div>`:'');
+}
+
+/* ===== LABA PER PRODUK ===== */
+async function loadProdProfit(){
+  const el=$('tblProfit');if(!el)return;
+  const d=await api('prod_profit');if(d.error)return;
+  let h='<thead><tr><th>Produk</th><th style="text-align:right">Terjual</th><th style="text-align:right">Pendapatan</th><th style="text-align:right">HPP</th><th style="text-align:right">Laba</th><th style="text-align:right">Margin</th></tr></thead><tbody>';
+  for(const r of d.rows){
+    h+=`<tr><td><b>${esc(r.name)}</b></td>
+     <td style="text-align:right">${r.qty_sold} ${esc(r.unit)}</td>
+     <td style="text-align:right">${fmt(r.revenue)}</td>
+     <td style="text-align:right" class="small">${fmt(r.cogs)}</td>
+     <td style="text-align:right" class="${r.profit>=0?'pos':'neg'}"><b>${fmt(r.profit)}</b></td>
+     <td style="text-align:right"><span class="badge ${r.margin>=20?'b-done':r.margin>=0?'b-wait':'b-keluar'}">${r.margin!=null?r.margin+'%':'—'}</span></td></tr>`;
+  }
+  el.innerHTML=h+(d.rows.length?'':'<tr><td colspan=6 class=empty>Belum ada penjualan tercatat via stok</td></tr>')+'</tbody>';
 }
 
 /* ===== UMUR PIUTANG (aging) ===== */

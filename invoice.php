@@ -63,6 +63,16 @@ $statusBadge = ['unpaid'=>'⏳ BELUM LUNAS','paid'=>'✅ LUNAS','void'=>'✖ DIB
 <?php endif; ?>
 </table>
 
+<?php if ($inv['status'] === 'unpaid' && trim((string)cfg('qris_text')) !== ''): ?>
+<div style="margin-top:22px;display:flex;gap:16px;align-items:center">
+ <img src="https://api.qrserver.com/v1/create-qr-code/?size=170x170&data=<?= urlencode(cfg('qris_text')) ?>"
+      alt="QR Bayar" width="170" height="170" style="border:1px solid #e5e7eb;border-radius:10px">
+ <div style="font-size:13px;color:#374151;line-height:1.6">
+  <b>Scan untuk bayar</b><br>QRIS / transfer sesuai data di QR.<br>
+  <span style="color:#6b7280">Konfirmasi pembayaran ke penjual setelah transfer.</span></div>
+</div>
+<?php endif; ?>
+
 <div class="note">
  Kwitansi ini sah tanpa tanda tangan basah (transaksi tercatat digital).<br>
  Dicetak oleh <?= htmlspecialchars($owner) ?> — Dompet Owner.

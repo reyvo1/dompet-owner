@@ -59,15 +59,47 @@ try {
 switch ($action) {
 
 case 'login':
+    $ip = $_SERVER['REMOTE_ADDR'] ?? '';
+    $uname = trim($input['username'] ?? '');
+    if (login_throttled($ip, $uname))
+        out(['error' => 'Terlalu banyak percobaan gagal. Tunggu ±15 menit lagi.'], 429);
     $st = db()->prepare("SELECT * FROM users WHERE username=? AND active=1");
-    $st->execute([trim($input['username'] ?? '')]);
+    $st->execute([$uname]);
     $u = $st->fetch();
     if (!$u || !password_verify($input['password'] ?? '', $u['password_hash'])) {
+        login_attempt($ip, $uname, false);
         out(['error' => 'Username / password salah'], 401);
+    }
+    login_attempt($ip, $uname, true);
+    // 2FA: kirim OTP ke Telegram dulu, login selesai setelah login_otp
+    if (!empty($u['twofa'])) {
+        if (!otp_send($u))
+            out(['error' => 'Akun 2FA aktif tapi bot tidak bisa mengirim OTP (chat Telegram belum terikat). Hubungi admin.'], 422);
+        session_regenerate_id(true);
+        $_SESSION['pending_2fa'] = (int)$u['id'];
+        out(['otp_required' => true, 'msg' => 'Kode OTP dikirim ke Telegram kamu — berlaku 5 menit']);
     }
     session_regenerate_id(true);
     $_SESSION['user_id'] = $u['id'];
     out(['ok' => true, 'user' => ['name' => $u['display_name'], 'role' => $u['role']]]);
+
+case 'login_otp':
+    $uid = (int)($_SESSION['pending_2fa'] ?? 0);
+    if (!$uid) out(['error' => 'Tidak ada sesi OTP — login dulu'], 422);
+    if (!otp_verify($uid, trim((string)($input['code'] ?? ''))))
+        out(['error' => 'Kode OTP salah / sudah kedaluwarsa'], 401);
+    session_regenerate_id(true);
+    $_SESSION['user_id'] = $uid;
+    unset($_SESSION['pending_2fa']);
+    $st = db()->prepare("SELECT * FROM users WHERE id=?"); $st->execute([$uid]);
+    $u = $st->fetch();
+    out(['ok' => true, 'user' => ['name' => $u['display_name'], 'role' => $u['role']]]);
+
+case 'otp_toggle':
+    $u = require_login();
+    $new = empty($u['twofa']) ? 1 : 0;
+    db()->prepare("UPDATE users SET twofa=? WHERE id=?")->execute([$new, $u['id']]);
+    out(['ok' => true, 'twofa' => $new]);
 
 case 'logout':
     session_destroy();
@@ -81,7 +113,8 @@ case 'me':
         $bizName = $b->fetch()['name'] ?? null;
     }
     out(['user' => ['name' => $u['display_name'], 'role' => $u['role'],
-        'business_id' => $u['business_id'] ? (int)$u['business_id'] : null, 'business_name' => $bizName]]);
+        'business_id' => $u['business_id'] ? (int)$u['business_id'] : null, 'business_name' => $bizName,
+        'twofa' => !empty($u['twofa'])]]);
 
 /* ---------- RINGKASAN: khusus kariawan (cabangnya sendiri) ---------- */
 case 'summary_branch':
@@ -304,6 +337,12 @@ case 'liab_list':
         $r['available'] = $r['limit_amount'] > 0
             ? max(0, (float)$r['limit_amount'] - (float)$r['outstanding'])
             : null;
+        // cicilan terjadwal (pinjaman bertenor): sisa saldo dibagi sisa tenor
+        if ($r['tenor_months']) {
+            $remain = max(1, (int)$r['tenor_months'] - (int)$r['installments_paid']);
+            $r['installment'] = round((float)$r['outstanding'] / $remain, 2);
+            $r['installments_left'] = (float)$r['outstanding'] > 0 ? $remain : 0;
+        }
         // tagihan berjalan (charge sejak statement terakhir) — sederhana: outstanding penuh utk kartu
         if ($r['kind'] === 'credit_card' && $r['statement_day']) {
             $day = min((int)$r['statement_day'], 28);
@@ -330,15 +369,17 @@ case 'liab_add':
     $name = trim($input['name'] ?? '');
     if ($name === '') out(['error' => 'Nama kosong'], 422);
     if (!in_array($input['kind'] ?? '', ['credit_card','paylater','loan'])) out(['error'=>'Jenis tidak valid'],422);
-    db()->prepare("INSERT INTO liabilities (name,kind,limit_amount,outstanding,statement_day,due_day,min_pay_pct,business_id,note)
-        VALUES (?,?,?,?,?,?,?,?,?)")
+    db()->prepare("INSERT INTO liabilities (name,kind,limit_amount,outstanding,statement_day,due_day,min_pay_pct,business_id,note,tenor_months,interest_pct)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)")
         ->execute([$name, $input['kind'], (float)($input['limit_amount'] ?? 0),
                    (float)($input['outstanding'] ?? 0),
                    !empty($input['statement_day']) ? min(28,(int)$input['statement_day']) : null,
                    !empty($input['due_day']) ? min(28,(int)$input['due_day']) : null,
                    (float)($input['min_pay_pct'] ?? 10), 
                    !empty($input['business_id']) ? (int)$input['business_id'] : null,
-                   trim($input['note'] ?? '') ?: null]);
+                   trim($input['note'] ?? '') ?: null,
+                   !empty($input['tenor_months']) ? max(1,(int)$input['tenor_months']) : null,
+                   $input['interest_pct'] !== '' && isset($input['interest_pct']) ? (float)$input['interest_pct'] : null]);
     out(['ok' => true, 'id' => (int)db()->lastInsertId()]);
 
 case 'liab_delete':
@@ -396,7 +437,8 @@ case 'liab_pay':
     ]);
     db()->prepare("INSERT INTO liability_events (liability_id,tx_date,description,amount,direction,tx_id)
         VALUES (?,CURDATE(),?,?,'payment',?)")->execute([$lid, 'Bayar '.$l['name'], $pay, $txId]);
-    db()->prepare("UPDATE liabilities SET outstanding=outstanding-? WHERE id=?")->execute([$pay, $lid]);
+    db()->prepare("UPDATE liabilities SET outstanding=outstanding-?, installments_paid=installments_paid+? WHERE id=?")
+        ->execute([$pay, $l['tenor_months'] ? 1 : 0, $lid]);
     out(['ok' => true, 'tx_id' => $txId, 'paid' => $pay,
          'remaining' => max(0, $amount - $pay)]);
 
@@ -766,9 +808,13 @@ case 'stock_move':
     if($dir==='out' && (float)$pr['stock'] < $qty) out(['error'=>'Stok tidak cukup ('.$pr['stock'].' '.$pr['unit'].')'],422);
     $delta=$dir==='in'?$qty:-$qty;
     db()->prepare("UPDATE products SET stock=stock+? WHERE id=?")->execute([$delta,$pid]);
+    // harga per mutasi utk laporan laba per produk (default: harga jual/beli produk)
+    $unitPrice = !empty($input['unit_price'])
+        ? (float)$input['unit_price']
+        : ($dir==='in' ? (float)$pr['cost_price'] : (float)$pr['sell_price']);
     $txId=null;
     if(!empty($input['make_transaction'])){
-        $amount = $dir==='in' ? $qty*(float)$pr['cost_price'] : $qty*(float)$pr['sell_price'];
+        $amount = $qty*$unitPrice;
         if($amount>0){
             $txId=add_transaction(['type'=>($dir==='in'?'keluar':'masuk'),'amount'=>$amount,
                 'description'=>(($dir==='in'?'Beli stok: ':'Jual: ').$pr['name']." x$qty"),
@@ -778,8 +824,8 @@ case 'stock_move':
             db()->prepare("UPDATE stock_moves SET tx_id=? WHERE id=?")->execute([$txId, db()->lastInsertId()]);
         }
     }
-    db()->prepare("INSERT INTO stock_moves (product_id,tx_id,direction,qty,note) VALUES (?,?,?,?,?)")
-        ->execute([$pid,$txId,$dir,$qty,trim($input['note']??'')]);
+    db()->prepare("INSERT INTO stock_moves (product_id,tx_id,direction,qty,unit_price,note) VALUES (?,?,?,?,?,?)")
+        ->execute([$pid,$txId,$dir,$qty,$unitPrice,trim($input['note']??'')]);
     audit_log($u,'stock_move',"$dir $qty {$pr['name']}");
     out(['ok'=>true]);
 
@@ -796,11 +842,23 @@ case 'inv_create':
     $amt=(float)($input['amount']??0);
     if($cust===''||$amt<=0) out(['error'=>'Nama pelanggan & nominal wajib'],422);
     $number='INV/'.date('Ymd').'/'.strtoupper(bin2hex(random_bytes(2)));
-    db()->prepare("INSERT INTO invoices (business_id,number,customer_name,amount,description) VALUES (?,?,?,?,?)")
+    $contactId = !empty($input['contact_id']) ? (int)$input['contact_id'] : null;
+    if ($contactId) {
+        $stC = db()->prepare("SELECT name FROM contacts WHERE id=? AND active=1");
+        $stC->execute([$contactId]);
+        if ($c = $stC->fetch()) $cust = $c['name']; // nama ambil dari kontak
+    }
+    db()->prepare("INSERT INTO invoices (business_id,number,customer_name,contact_id,amount,description) VALUES (?,?,?,?,?,?)")
         ->execute([!empty($input['business_id'])?(int)$input['business_id']:null,
-            $number,$cust,$amt,trim($input['description']??'')]);
+            $number,$cust,$contactId,$amt,trim($input['description']??'')]);
+    $invId = (int)db()->lastInsertId();
     audit_log($u,'inv_create',$number.' '.$cust.' Rp'.$amt);
-    out(['ok'=>true,'id'=>(int)db()->lastInsertId(),'number'=>$number]);
+    // Midtrans Snap (QRIS dinamis) kalau aktif — kalau gagal, kwitansi tetap ada (QRIS statis)
+    require_once __DIR__ . '/src/midtrans.php';
+    $snap = midtrans_snap_create(['number'=>$number,'amount'=>$amt,'customer'=>$cust,'description'=>trim($input['description']??''),'inv_id'=>$invId]);
+    if ($snap) db()->prepare("UPDATE invoices SET snap_token=?, snap_url=? WHERE id=?")
+        ->execute([$snap['token'],$snap['url'],$invId]);
+    out(['ok'=>true,'id'=>$invId,'number'=>$number]+($snap?['snap_url'=>$snap['url']]:[]));
 
 case 'inv_pay':
     $u = require_login();
@@ -1135,12 +1193,26 @@ case 'settings_get':
         'notify_transactions' => cfg('notify_transactions','1'),
         'notify_bills' => cfg('notify_bills','1'),
         'big_tx_limit' => cfg('big_tx_limit','1000000'),
+        'wa_enabled' => cfg('wa_enabled','0'),
+        'wa_token_masked' => $mask(cfg('wa_token')),
+        'wa_token_set' => cfg('wa_token') !== '',
+        'wa_target' => cfg('wa_target'),
+        'wa_endpoint' => cfg('wa_endpoint','https://api.fonnte.com/send'),
+        'qris_text' => cfg('qris_text'),
+        'fx_auto' => cfg('fx_auto','0'),
+        'cloud_backup_cmd' => cfg('cloud_backup_cmd'),
+        'login_max_fail' => cfg('login_max_fail','5'),
+        'midtrans_server_key_masked' => $mask(cfg('midtrans_server_key')),
+        'midtrans_server_key_set' => cfg('midtrans_server_key') !== '',
+        'midtrans_client_key' => cfg('midtrans_client_key'),
     ]);
 
 case 'settings_set':
     $u = require_login();
     if (($u['role'] ?? '') !== 'owner') out(['error' => 'Khusus owner'], 403);
-    $allowed = ['bot_token','owner_chat_id','gemini_key','notify_transactions','notify_bills','big_tx_limit'];
+    $allowed = ['bot_token','owner_chat_id','gemini_key','notify_transactions','notify_bills','big_tx_limit',
+        'wa_enabled','wa_token','wa_target','wa_endpoint','qris_text','fx_auto','cloud_backup_cmd','login_max_fail',
+        'midtrans_server_key','midtrans_client_key'];
     foreach ($allowed as $k) {
         if (array_key_exists($k, $input)) {
             if ($input[$k] === '' || strpos((string)$input[$k],'••••') !== false) continue; // jangan timpa dgn mask
@@ -1148,6 +1220,20 @@ case 'settings_set':
         }
     }
     out(['ok'=>true]);
+
+case 'wa_test':
+    $u = require_login();
+    if (($u['role'] ?? '') !== 'owner') out(['error' => 'Khusus owner'], 403);
+    if (cfg('wa_enabled') !== '1') out(['ok'=>false,'msg'=>'WhatsApp belum diaktifkan']);
+    $ok = notify_wa("✅ Tes koneksi Dompet Owner → WhatsApp. Kalau pesan ini sampai, notifikasi WA aktif.");
+    out(['ok'=>$ok,'msg'=>$ok?'Pesan tes terkirim ke WA':'Gagal kirim — cek token/target/endpoint']);
+
+case 'fx_fetch':
+    // tarik kurs otomatis dari open.er-api.com (gratis, tanpa key)
+    $u = require_login();
+    if (($u['role'] ?? '') !== 'owner') out(['error' => 'Khusus owner'], 403);
+    require_once __DIR__ . '/src/fx.php';
+    out(fx_fetch_now());
 
 case 'tg_test':
     // Test koneksi bot: getMe + kirim pesan tes kalau chat id ada
@@ -1381,6 +1467,339 @@ case 'tx_delete':
         null);
     out(['ok' => true]);
 
+/* ---------- KONTAK (CRM LITE: pelanggan & pemasok) ---------- */
+case 'contact_list':
+    require_login();
+    out(['rows' => db()->query("SELECT c.*, b.name biz,
+        (SELECT COUNT(*) FROM invoices i WHERE i.contact_id=c.id) n_inv,
+        (SELECT COALESCE(SUM(i.amount),0) FROM invoices i WHERE i.contact_id=c.id AND i.status='paid') omzet
+        FROM contacts c LEFT JOIN businesses b ON b.id=c.business_id
+        WHERE c.active=1 ORDER BY c.name")->fetchAll()]);
+
+case 'contact_add':
+    $u = require_login();
+    if (($u['role'] ?? '') !== 'owner') out(['error' => 'Khusus owner'], 403);
+    $name = trim($input['name'] ?? '');
+    if ($name === '') out(['error' => 'Nama kontak wajib'], 422);
+    db()->prepare("INSERT INTO contacts (kind,name,phone,note,business_id) VALUES (?,?,?,?,?)")
+        ->execute([in_array($input['kind']??'', ['customer','supplier','both'], true) ? $input['kind'] : 'customer',
+            $name, trim($input['phone']??'') ?: null, trim($input['note']??'') ?: null,
+            !empty($input['business_id']) ? (int)$input['business_id'] : null]);
+    out(['ok'=>true,'id'=>(int)db()->lastInsertId()]);
+
+case 'contact_delete':
+    $u = require_login();
+    if (($u['role'] ?? '') !== 'owner') out(['error' => 'Khusus owner'], 403);
+    db()->prepare("UPDATE contacts SET active=0 WHERE id=?")->execute([(int)($input['id']??0)]);
+    out(['ok'=>true]);
+
+/* ---------- KASBON KARIAWAN ---------- */
+case 'adv_list':
+    require_login();
+    $rows = db()->query("SELECT a.*, e.name emp, e.position pos, b.name biz
+        FROM employee_advances a
+        JOIN employees e ON e.id=a.employee_id
+        LEFT JOIN businesses b ON b.id=e.business_id
+        WHERE a.status<>'settled' ORDER BY a.advance_date DESC, a.id DESC")->fetchAll();
+    $totalOpen = (float)db()->query("SELECT COALESCE(SUM(amount),0) s FROM employee_advances WHERE status='open'")->fetch()['s'];
+    out(['rows'=>$rows, 'total_open'=>$totalOpen, 'today'=>date('Y-m-d')]);
+
+case 'adv_add':
+    // beri kasbon: kas owner keluar SEKARANG, nanti dipotong di gajian / dilunasi tunai
+    $u = require_login();
+    if (($u['role'] ?? '') !== 'owner') out(['error' => 'Khusus owner'], 403);
+    $empId = (int)($input['employee_id'] ?? 0);
+    $amt = (float)($input['amount'] ?? 0);
+    if (!$empId || $amt <= 0) out(['error' => 'Pilih staf & isi nominal'], 422);
+    $st = db()->prepare("SELECT e.*, b.id biz_id FROM employees e LEFT JOIN businesses b ON b.id=e.business_id WHERE e.id=? AND e.active=1");
+    $st->execute([$empId]);
+    if (!$e = $st->fetch()) out(['error' => 'Staf tidak ditemukan'], 404);
+    $bizId = $e['biz_id'] ? (int)$e['biz_id'] : null;
+    $txId = add_transaction([
+        'type'=>'keluar','amount'=>$amt,
+        'description'=>'[KASBON] '.$e['name'].($input['reason'] ? ' - '.trim($input['reason']) : ''),
+        'source'=>'owner','user_id'=>$u['id'],'business_id'=>$bizId,
+        'scope'=>$bizId?'usaha':'pribadi',
+        'wallet_id'=>!empty($input['wallet_id']) ? (int)$input['wallet_id'] : null,
+    ]);
+    db()->prepare("INSERT INTO employee_advances (employee_id,amount,advance_date,reason) VALUES (?,?,?,?)")
+        ->execute([$empId, $amt, $input['advance_date'] ?: date('Y-m-d'), trim($input['reason']??'') ?: null]);
+    $advId = (int)db()->lastInsertId();
+    db()->prepare("UPDATE employee_advances SET tx_id=? WHERE id=?")->execute([$txId, $advId]);
+    audit_log($u,'kasbon_give',$e['name'].' Rp'.number_format($amt,0,',','.'),'employee_advance',$advId,null,['amount'=>$amt]);
+    out(['ok'=>true,'tx_id'=>$txId,'id'=>$advId]);
+
+case 'adv_settle':
+    // kariawan bayar kasbon tunai -> kas masuk, kasbon lunas
+    $u = require_login();
+    if (($u['role'] ?? '') !== 'owner') out(['error' => 'Khusus owner'], 403);
+    $id = (int)($input['id'] ?? 0);
+    $st = db()->prepare("SELECT a.*, e.name emp, b.id biz_id FROM employee_advances a
+        JOIN employees e ON e.id=a.employee_id LEFT JOIN businesses b ON b.id=e.business_id
+        WHERE a.id=? AND a.status<>'settled'");
+    $st->execute([$id]);
+    if (!$a = $st->fetch()) out(['error' => 'Kasbon tidak ada / sudah lunas'], 404);
+    $amt = (float)($input['amount'] ?? $a['amount']);
+    $amt = min($amt, (float)$a['amount']);
+    if ($amt <= 0) out(['error' => 'Nominal tidak valid'], 422);
+    $bizId = $a['biz_id'] ? (int)$a['biz_id'] : null;
+    $txId = add_transaction([
+        'type'=>'masuk','amount'=>$amt,
+        'description'=>'[KASBON LUNAS] '.$a['emp'],
+        'source'=>'owner','user_id'=>$u['id'],'business_id'=>$bizId,
+        'scope'=>$bizId?'usaha':'pribadi',
+        'wallet_id'=>!empty($input['wallet_id']) ? (int)$input['wallet_id'] : null,
+    ]);
+    $full = $amt >= (float)$a['amount'];
+    db()->prepare("UPDATE employee_advances SET status=?, settled_via=?, amount=? WHERE id=?")
+        ->execute([$full?'settled':'open','cash tunai', $full ? $a['amount'] : (float)$a['amount'] - $amt, $id]);
+    audit_log($u,'kasbon_settle',$a['emp'].' Rp'.number_format($amt,0,',','.'),'employee_advance',$id,['status'=>$a['status']],['status'=>$full?'settled':'open']);
+    out(['ok'=>true,'tx_id'=>$txId,'full'=>$full]);
+
+case 'adv_del':
+    // batal kasbon salah entri: kas dikembalikan otomatis, catatan ditutup
+    $u = require_login();
+    if (($u['role'] ?? '') !== 'owner') out(['error' => 'Khusus owner'], 403);
+    $id = (int)($input['id'] ?? 0);
+    $st = db()->prepare("SELECT a.*, e.name emp FROM employee_advances a JOIN employees e ON e.id=a.employee_id
+        WHERE a.id=? AND a.status='open'");
+    $st->execute([$id]);
+    if (!$a = $st->fetch()) out(['error' => 'Kasbon tidak ada / sudah diproses'], 404);
+    add_transaction(['type'=>'masuk','amount'=>(float)$a['amount'],
+        'description'=>'[KASBON DIBATALK] '.$a['emp'],
+        'source'=>'owner','user_id'=>$u['id'],
+        'wallet_id'=>!empty($input['wallet_id']) ? (int)$input['wallet_id'] : null]);
+    db()->prepare("UPDATE employee_advances SET status='settled', settled_via='dibatalkan' WHERE id=?")->execute([$id]);
+    out(['ok'=>true]);
+
+/* ---------- KOMISI PENJUALAN ---------- */
+case 'comm_rules':
+    require_login();
+    out(['rows'=>db()->query("SELECT r.*, c.name cat, b.name biz FROM commission_rules r
+        LEFT JOIN categories c ON c.id=r.category_id LEFT JOIN businesses b ON b.id=r.business_id
+        ORDER BY r.active DESC, r.id")->fetchAll()]);
+
+case 'comm_rule_add':
+    $u = require_login();
+    if (($u['role'] ?? '') !== 'owner') out(['error' => 'Khusus owner'], 403);
+    $pct = (float)($input['pct'] ?? 0);
+    if ($pct <= 0 || $pct > 100) out(['error' => 'Persen komisi harus 0-100'], 422);
+    $cat = null;
+    if (!empty($input['category'])) {
+        $st = db()->prepare("SELECT id FROM categories WHERE name=?"); $st->execute([$input['category']]);
+        $cat = $st->fetch()['id'] ?? null;
+    }
+    db()->prepare("INSERT INTO commission_rules (business_id,category_id,pct) VALUES (?,?,?)")
+        ->execute([!empty($input['business_id']) ? (int)$input['business_id'] : null,
+            !empty($input['category']) ? $cat : null, $pct]);
+    out(['ok'=>true,'id'=>(int)db()->lastInsertId()]);
+
+case 'comm_rule_delete':
+    $u = require_login();
+    if (($u['role'] ?? '') !== 'owner') out(['error' => 'Khusus owner'], 403);
+    db()->prepare("DELETE FROM commission_rules WHERE id=?")->execute([(int)($input['id']??0)]);
+    out(['ok'=>true]);
+
+case 'comm_list':
+    // rekap komisi pending periode berjalan + riwayat terakhir
+    require_login();
+    $period = date('Y-m');
+    require_once __DIR__ . '/src/commission.php';
+    $pending = commission_pending_by_user($period);
+    $detail = db()->prepare("SELECT c.*, u.display_name, e.name emp, t.description, t.tx_date
+        FROM commissions c JOIN users u ON u.id=c.user_id LEFT JOIN employees e ON e.id=c.employee_id
+        JOIN transactions t ON t.id=c.tx_id
+        WHERE c.period=? ORDER BY c.id DESC LIMIT 50");
+    $detail->execute([$period]);
+    out(['period'=>$period, 'pending'=>$pending, 'detail'=>$detail->fetchAll()]);
+
+case 'comm_apply':
+    // masukkan semua komisi pending bulan ini ke gajian staf (jadi bonus)
+    $u = require_login();
+    if (($u['role'] ?? '') !== 'owner') out(['error' => 'Khusus owner'], 403);
+    require_once __DIR__ . '/src/commission.php';
+    $period = date('Y-m');
+    $n = commission_apply_to_payroll($period);
+    out(['ok'=>true,'applied'=>$n,'period'=>$period]);
+
+/* ---------- REKONSILIASI KAS & BANK ---------- */
+case 'recon_list':
+    require_login();
+    out(['rows'=>db()->query("SELECT r.*, w.name wallet FROM cash_reconciliations r
+        JOIN wallets w ON w.id=r.wallet_id ORDER BY r.id DESC LIMIT 30")->fetchAll()]);
+
+case 'recon_add':
+    $u = require_login();
+    if (($u['role'] ?? '') !== 'owner') out(['error' => 'Khusus owner'], 403);
+    $wid = (int)($input['wallet_id'] ?? 0);
+    $actual = (float)($input['actual_balance'] ?? 0);
+    if (!$wid) out(['error' => 'Pilih rekening dulu'], 422);
+    $st = db()->prepare("SELECT * FROM wallets WHERE id=?"); $st->execute([$wid]);
+    if (!$w = $st->fetch()) out(['error' => 'Rekening tidak ada'], 404);
+    $book = (float)$w['balance'];
+    $diff = round($actual - $book, 2);
+    $adjusted = false;
+    if (abs($diff) > 0.005 && !empty($input['adjust'])) {
+        $adjustTx = add_transaction([
+            'type'=>$diff > 0 ? 'masuk' : 'keluar','amount'=>abs($diff),
+            'description'=>'[REKON] Koreksi '.$w['name'].($input['note'] ? ' - '.trim($input['note']) : ''),
+            'source'=>'owner','user_id'=>$u['id'],
+            'scope'=>!empty($input['business_id']) ? 'usaha' : 'pribadi',
+            'business_id'=>!empty($input['business_id']) ? (int)$input['business_id'] : null,
+            'wallet_id'=>$wid,
+        ]);
+        $adjusted = true;
+        $book = $actual;
+    }
+    db()->prepare("INSERT INTO cash_reconciliations (wallet_id,recon_date,book_balance,actual_balance,diff,note,adjusted,created_by)
+        VALUES (?,CURDATE(),?,?,?,?,?,?)")
+        ->execute([$wid, $book, $actual, $diff, trim($input['note']??'') ?: null, $adjusted?1:0, $u['id']]);
+    audit_log($u,'recon',$w['name'].' buku '.number_format($book,0,',','').' vs fisik '.number_format($actual,0,',',''),'wallet',$wid,null,['diff'=>$diff,'adjusted'=>$adjusted]);
+    out(['ok'=>true,'book_before'=>$w['balance'],'actual'=>$actual,'diff'=>$diff,'adjusted'=>$adjusted]);
+
+/* ---------- LEADERBOARD KARIAWAN ---------- */
+case 'leaderboard':
+    require_login();
+    $period = date('Y-m');
+    $u = require_login();
+    $where = "t.user_id IS NOT NULL AND t.type='masuk' AND DATE_FORMAT(t.tx_date,'%Y-%m')=?
+        AND t.source IN ('bot_kariawan','kariawan_web','approval')";
+    $params = [$period];
+    if ($u['business_id']) { $where .= " AND t.business_id=?"; $params[] = (int)$u['business_id']; }
+    elseif (!empty($input['business_id'])) { $where .= " AND t.business_id=?"; $params[] = (int)$input['business_id']; }
+    $st = db()->prepare("SELECT t.user_id, u.display_name, b.name biz,
+            SUM(t.amount) omzet, COUNT(*) n_tx
+        FROM transactions t JOIN users u ON u.id=t.user_id
+        LEFT JOIN businesses b ON b.id=t.business_id
+        WHERE $where GROUP BY t.user_id, u.display_name, b.name ORDER BY omzet DESC LIMIT 20");
+    $st->execute($params);
+    $rows = $st->fetchAll();
+    // gabung komisi pending
+    require_once __DIR__ . '/src/commission.php';
+    $comm = [];
+    foreach (commission_pending_by_user($period) as $c) $comm[$c['user_id']] = (float)$c['total'];
+    foreach ($rows as &$r) {
+        $r['omzet'] = (float)$r['omzet'];
+        $r['komisi'] = $comm[$r['user_id']] ?? 0.0;
+        $r['rank'] = 0;
+    }
+    unset($r);
+    usort($rows, fn($a,$b2) => $b2['omzet'] <=> $a['omzet']);
+    foreach ($rows as $i=>&$r) $r['rank'] = $i+1;
+    unset($r);
+    $me = array_values(array_filter($rows, fn($r) => $r['user_id']==(int)$u['id']))[0] ?? null;
+    out(['period'=>$period,'rows'=>$rows,'me'=>$me]);
+
+/* ---------- LABA PER PRODUK ---------- */
+case 'prod_profit':
+    require_login();
+    $rows = db()->query("SELECT p.id, p.name, p.unit,
+            COALESCE(p.cost_price,0) cost_price, COALESCE(p.sell_price,0) sell_price,
+            COALESCE(SUM(CASE WHEN m.direction='out' THEN m.qty ELSE 0 END),0) qty_sold,
+            COALESCE(SUM(CASE WHEN m.direction='out' THEN m.qty*COALESCE(m.unit_price,p.sell_price) ELSE 0 END),0) revenue,
+            COALESCE(SUM(CASE WHEN m.direction='out' THEN m.qty*COALESCE(p.cost_price,0) ELSE 0 END),0) cogs
+        FROM products p LEFT JOIN stock_moves m ON m.product_id=p.id
+        WHERE p.active=1
+        GROUP BY p.id HAVING qty_sold>0 ORDER BY revenue DESC LIMIT 100")->fetchAll();
+    foreach ($rows as &$r) {
+        $r['revenue']=(float)$r['revenue']; $r['cogs']=(float)$r['cogs']; $r['qty_sold']=(float)$r['qty_sold'];
+        $r['profit'] = round($r['revenue']-$r['cogs'],2);
+        $r['margin'] = $r['revenue']>0 ? round($r['profit']/$r['revenue']*100,1) : null;
+    }
+    unset($r);
+    out(['rows'=>$rows]);
+
+/* ---------- BACKUP + KIRIM KE CLOUD ---------- */
+case 'backup_cloud':
+    $u = require_login();
+    if (($u['role'] ?? '') !== 'owner') out(['error' => 'Khusus owner'], 403);
+    $bash = 'C:\\Program Files\\Git\\bin\\bash.exe';
+    $script = 'C:\\Users\\IVO\\dompet-owner\\tools\\backup-db.sh';
+    if (!is_file($bash) || !is_file($script)) out(['error' => 'Tools backup tidak ditemukan'], 500);
+    $outRaw = shell_exec('"' . $bash . '" "' . $script . '" 2>&1');
+    $detail = trim((string)$outRaw);
+    $cloud = '';
+    $cmd = trim(cfg('cloud_backup_cmd'));
+    if (str_contains($detail, 'OK:') && $cmd !== '') {
+        // placeholder {file} diganti path dump terbaru hasil backup
+        if (preg_match('/OK:\s*(\S+\.sql)/', $detail, $m)) {
+            $cloudCmd = str_replace('{file}', $m[1], $cmd);
+            $cloudOut = shell_exec($cloudCmd . ' 2>&1');
+            $cloud = trim((string)$cloudOut);
+        }
+    }
+    $ok = str_contains($detail, 'OK:');
+    out(array_merge($ok ? ['ok'=>true] : ['error'=>'Backup gagal'],
+        ['detail'=>$detail, 'cloud'=>$cloud !== '' ? $cloud : ($cmd===''?'(perintah cloud belum diset)':'(selesai)')]));
+
+/* ---------- ABSENSI KARIAWAN ---------- */
+case 'att_toggle':
+    // check-in / check-out satu tombol (dipakai bot & web)
+    $u = require_login();
+    require_once __DIR__ . '/src/attendance.php';
+    out(attendance_toggle($u));
+
+case 'att_list':
+    // rekap bulan berjalan: kariawan = dirinya; owner = semua
+    $u = require_login();
+    $period = date('Y-m');
+    $where = "DATE_FORMAT(work_date,'%Y-%m')=?";
+    $params = [$period];
+    if ($u['role'] !== 'owner') { $where .= " AND user_id=?"; $params[] = (int)$u['id']; }
+    elseif (!empty($input['business_id'])) { $where .= " AND business_id=?"; $params[] = (int)$input['business_id']; }
+    $st = db()->prepare("SELECT a.*, us.display_name FROM attendance a JOIN users us ON us.id=a.user_id
+        WHERE $where ORDER BY work_date DESC, us.display_name LIMIT 200");
+    $st->execute($params);
+    $sum = db()->prepare("SELECT COUNT(*) hari, SUM(overtime_min) lembur FROM attendance WHERE $where");
+    $sum->execute($params);
+    $s = $sum->fetch();
+    out(['period'=>$period, 'rows'=>$st->fetchAll(),
+        'total_hari'=>(int)$s['hari'], 'total_lembur_min'=>(int)$s['lembur'], 'today'=>date('Y-m-d')]);
+
+case 'att_today':
+    // owner: siapa yang absen hari ini
+    $u = require_login();
+    if (($u['role'] ?? '') !== 'owner') out(['error' => 'Khusus owner'], 403);
+    out(['rows'=>db()->query("SELECT a.*, us.display_name, b.name biz FROM attendance a
+        JOIN users us ON us.id=a.user_id LEFT JOIN businesses b ON b.id=a.business_id
+        WHERE a.work_date=CURDATE() ORDER BY a.check_in")->fetchAll(), 'today'=>date('Y-m-d')]);
+
+/* ---------- KWITANSI LANGGANAN ---------- */
+case 'rinv_list':
+    require_login();
+    out(['rows'=>db()->query("SELECT r.*, b.name biz FROM recurring_invoices r
+        LEFT JOIN businesses b ON b.id=r.business_id WHERE r.active=1 ORDER BY r.next_date")->fetchAll(),
+        'today'=>date('Y-m-d')]);
+
+case 'rinv_add':
+    $u = require_login();
+    if (($u['role'] ?? '') !== 'owner') out(['error' => 'Khusus owner'], 403);
+    $cust = trim($input['customer_name'] ?? '');
+    $amt = (float)($input['amount'] ?? 0);
+    if ($cust==='' || $amt<=0) out(['error'=>'Nama pelanggan & nominal wajib'],422);
+    if (!in_array($input['frequency']??'', ['monthly','weekly'], true)) $input['frequency']='monthly';
+    if (empty($input['next_date'])) out(['error'=>'Tanggal mulai wajib'],422);
+    db()->prepare("INSERT INTO recurring_invoices (business_id,customer_name,contact_id,amount,description,frequency,next_date)
+        VALUES (?,?,?,?,?,?,?)")
+        ->execute([!empty($input['business_id'])?(int)$input['business_id']:null, $cust,
+            !empty($input['contact_id'])?(int)$input['contact_id']:null, $amt,
+            trim($input['description']??'') ?: null, $input['frequency'], $input['next_date']]);
+    out(['ok'=>true,'id'=>(int)db()->lastInsertId()]);
+
+case 'rinv_delete':
+    $u = require_login();
+    if (($u['role'] ?? '') !== 'owner') out(['error' => 'Khusus owner'], 403);
+    db()->prepare("DELETE FROM recurring_invoices WHERE id=?")->execute([(int)($input['id']??0)]);
+    out(['ok'=>true]);
+
+case 'rinv_run':
+    // generate semua kwitansi yang jatuh tempo (dipakai cron & tombol manual)
+    $u = require_login();
+    if (($u['role'] ?? '') !== 'owner') out(['error' => 'Khusus owner'], 403);
+    require_once __DIR__ . '/src/subinv.php';
+    out(subinv_run_all());
+
+/* ---------- backup_run ---------- */
 case 'backup_run':
     $u = require_login();
     if (($u['role'] ?? '') !== 'owner') out(['error' => 'Khusus owner'], 403);
@@ -1511,7 +1930,25 @@ case 'payroll_generate':
             VALUES (?,?,?,?, 'pending')")->execute([$e['id'], $period, (float)$e['base_salary'], (float)$e['base_salary']]);
         $n++;
     }
-    out(['ok' => true, 'created' => $n]);
+    // kasbon belum lunas otomatis dipotong dari gajian periode ini
+    $advCut = 0;
+    $stAdv = db()->query("SELECT a.*, e.id emp_id FROM employee_advances a
+        JOIN employees e ON e.id=a.employee_id WHERE a.status='open' AND e.active=1");
+    foreach ($stAdv as $adv) {
+        $chk = db()->prepare("SELECT p.id, p.deduction_amount, p.status FROM payrolls p WHERE p.employee_id=? AND p.period=?");
+        $chk->execute([(int)$adv['employee_id'], $period]);
+        if (!$p = $chk->fetch()) continue;          // staf belum ada di gajian
+        if ($p['status'] === 'paid') continue;      // sudah dibayar, tak bisa dipotong
+        $cut = (float)$adv['amount'];
+        if ($cut <= 0) continue;
+        db()->prepare("UPDATE payrolls SET deduction_amount=deduction_amount+?,
+            net_amount=GREATEST(0,base_amount+bonus_amount-deduction_amount-?) WHERE id=?")
+            ->execute([$cut, $cut, (int)$p['id']]);
+        db()->prepare("UPDATE employee_advances SET status='payroll', payroll_id=?, settled_via=? WHERE id=?")
+            ->execute([(int)$p['id'], 'potong gajian '.$period, (int)$adv['id']]);
+        $advCut++;
+    }
+    out(['ok' => true, 'created' => $n, 'kasbon_dipotong' => $advCut]);
 
 case 'payroll_adjust':
     $u = require_login(); if ($u['role'] !== 'owner') out(['error' => 'Khusus owner'], 403);

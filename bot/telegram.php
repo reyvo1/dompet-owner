@@ -48,8 +48,10 @@ function main_menu_kb(array $user): array {
         $kb[] = [['text'=>'👥 Gaji','callback_data'=>'m:payroll'],['text'=>'🏭 Aset','callback_data'=>'m:aset']];
         $kb[] = [['text'=>'🪙 Kas Kecil','callback_data'=>'m:petty'],['text'=>'🏬 Cabang','callback_data'=>'m:cabang']];
         $kb[] = [['text'=>'🔔 Persetujuan','callback_data'=>'m:appr'],['text'=>'🛡️ Audit','callback_data'=>'m:audit']];
+        $kb[] = [['text'=>'🏆 Leaderboard','callback_data'=>'m:lb'],['text'=>'💰 Kasbon','callback_data'=>'m:adv']];
     } else {
         $kb[] = [['text'=>'📊 Hariku','callback_data'=>'m:hariku'],['text'=>'📈 Rekap 7 hari','callback_data'=>'m:rekap']];
+        $kb[] = [['text'=>'🧾 Absen','callback_data'=>'m:absen'],['text'=>'🏆 Peringkatku','callback_data'=>'m:lbme']];
         $kb[] = [['text'=>'🧾 Catat Transaksi','callback_data'=>'tx:start'],['text'=>'🏬 Cabangku','callback_data'=>'m:cabangme']];
     }
     $kb[] = [['text'=>'🤖 Tanya AI','callback_data'=>'ai:start'],['text'=>'🔄 Menu Awal','callback_data'=>'m:home']];
@@ -480,6 +482,15 @@ function handle_callback(array $cb): void {
                 'cabang'   => [fn()=>cabang_list_text()."\n\nKelola kariawan dari dashboard ya.", fn()=>back_kb()],
                 'appr'     => [fn()=>appr_text((int)$user['id']), fn()=>back_kb()],
                 'audit'    => [fn()=>audit_text(), fn()=>back_kb()],
+                'lb'       => [fn()=>leaderboard_text($user), fn()=>back_kb()],
+                'lbme'     => [fn()=>leaderboard_text($user), fn()=>back_kb()],
+                'adv'      => [fn()=>kasbon_text(), fn()=>back_kb()],
+                'absen'    => [function() use ($user) {
+                    require_once __DIR__ . '/../src/attendance.php';
+                    $r = attendance_toggle($user);
+                    $s = attendance_month_stats((int)$user['id']);
+                    return "🧾 *Absensi*\n".$r['msg']."\n\n📅 {$s['period']}: {$s['hari']} hari kerja, lembur {$s['lembur_min']} mnt.\nTekan tombol ini lagi untuk check-out.";
+                }, fn()=>back_kb()],
                 'hariku'   => [fn()=>laporan_hari_ini($user), fn()=>back_kb()],
                 'rekap'    => [fn()=>rekap_7_hari($user), fn()=>back_kb()],
                 'cabangme' => [function() use ($user) {
@@ -526,8 +537,10 @@ function handle_callback(array $cb): void {
             else $answer();
             break;
 
-        case 'act': // aksi cepat dari pengingat: bayar gaji / pajak / tagih piutang (owner only)
+        case 'act': case 'npayroll': case 'ntax': case 'nrecv':
+            // tombol aksi cepat dari pengingat cron pagi (npayroll/ntax/nrecv) & notif (act:)
             if ($user['role'] !== 'owner') { $answer('Khusus owner'); return; }
+            if ($ns !== 'act') $arg = ['npayroll'=>'payroll','ntax'=>'tax','nrecv'=>'recv'][$ns].':'.$arg;
             [$kind, $id] = array_pad(explode(':', $arg), 2, 0);
             $id = (int)$id;
             if ($kind === 'payroll') {
@@ -682,4 +695,47 @@ if (PHP_SAPI === 'cli' && !defined('BOT_TEST')) {
 } else {
     $input = json_decode(file_get_contents('php://input'), true);
     if ($input) { process_update($input); http_response_code(200); }
+}
+
+/* ---------- Leaderboard & Kasbon ---------- */
+function leaderboard_text(array $user): string {
+    $period = date('Y-m');
+    require_once __DIR__ . '/../src/commission.php';
+    $where = "t.user_id IS NOT NULL AND t.type='masuk' AND DATE_FORMAT(t.tx_date,'%Y-%m')=? 
+        AND t.source IN ('bot_kariawan','kariawan_web','approval')";
+    $params = [$period];
+    if ($user['role'] !== 'owner') { $where .= " AND t.user_id=?"; $params[] = (int)$user['id']; }
+    elseif ($user['business_id']) { $where .= " AND t.business_id=?"; $params[] = (int)$user['business_id']; }
+    $st = db()->prepare("SELECT t.user_id,u.display_name,SUM(t.amount) omzet,COUNT(*) n
+        FROM transactions t JOIN users u ON u.id=t.user_id WHERE $where
+        GROUP BY t.user_id ORDER BY omzet DESC LIMIT 10");
+    $st->execute($params);
+    $rows = $st->fetchAll();
+    if ($user['role'] !== 'owner') {
+        if (!$rows) return "📊 Kamu belum punya penjualan tercatat bulan ini. Ayo jual! 💪";
+        $r = $rows[0];
+        $comm = db()->prepare("SELECT COALESCE(SUM(amount),0) s FROM commissions WHERE user_id=? AND period=? AND status='pending'");
+        $comm->execute([(int)$user['id'], $period]);
+        $k = (float)$comm->fetch()['s'];
+        return "🏆 *Peringkatmu — {$period}*\n\nOmzet: Rp ".number_format((float)$r['omzet'],0,',','.')
+            ."\nTransaksi: {$r['n']}\nKomisi menunggu gajian: Rp ".number_format($k,0,',','.')."\n\nSemangat, naikkan peringkatmu! 💪";
+    }
+    if (!$rows) return "🏆 Leaderboard {$period}\n\nBelum ada penjualan kariawan bulan ini.";
+    $medal = ['🥇','🥈','🥉'];
+    $out = "🏆 *Leaderboard Kariawan — {$period}*\n\n";
+    foreach ($rows as $i=>$r)
+        $out .= ($medal[$i] ?? ('#'.($i+1)))." {$r['display_name']}: Rp ".number_format((float)$r['omzet'],0,',','.')." ({$r['n']} trx)\n";
+    return $out;
+}
+function kasbon_text(): string {
+    $rows = db()->query("SELECT a.*,e.name emp FROM employee_advances a JOIN employees e ON e.id=a.employee_id
+        WHERE a.status<>'settled' ORDER BY a.id DESC LIMIT 10")->fetchAll();
+    if (!$rows) return "💰 Tidak ada kasbon berjalan. 🎉";
+    $out = "💰 *Kasbon Kariawan (belum lunas)*\n\n";
+    foreach ($rows as $a)
+        $out .= "• {$a['emp']}: Rp ".number_format((float)$a['amount'],0,',','.')." — {$a['advance_date']}"
+            .($a['status']==='payroll' ? " (di gajian)" : "")."\n";
+    $tot = (float)db()->query("SELECT COALESCE(SUM(amount),0) s FROM employee_advances WHERE status='open'")->fetch()['s'];
+    $out .= "\nTotal open: Rp ".number_format($tot,0,',','.')."\nKelola (lunasi/potong gaji) dari dashboard → Gaji Staf.";
+    return $out;
 }

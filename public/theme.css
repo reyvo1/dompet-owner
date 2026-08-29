@@ -266,3 +266,90 @@ tr{transition:background .12s}
 ::-webkit-scrollbar{width:9px;height:9px}
 ::-webkit-scrollbar-thumb{background:var(--fd-border-strong);border-radius:99px}
 ::-webkit-scrollbar-track{background:transparent}
+
+/* ============================================================
+   POLISH LAYER v3 — modern & profesional (safe overrides)
+   ============================================================ */
+:root{
+  --fd-shadow:0 1px 2px rgba(15,31,51,.04),0 8px 24px rgba(15,31,51,.06),0 2px 8px rgba(15,31,51,.03);
+  --fd-shadow-lg:0 24px 70px rgba(15,31,51,.16),0 4px 14px rgba(15,31,51,.08);
+  --fd-ease:cubic-bezier(.22,.9,.28,1);
+}
+*{scrollbar-width:thin;scrollbar-color:var(--fd-border-strong) transparent}
+*::-webkit-scrollbar{width:9px;height:9px}
+*::-webkit-scrollbar-thumb{background:var(--fd-border-strong);border-radius:99px;border:2.5px solid var(--fd-bg)}
+*::-webkit-scrollbar-thumb:hover{background:var(--fd-faint)}
+*::-webkit-scrollbar-track{background:transparent}
+
+/* Fokus jelas utk aksesibilitas */
+:focus-visible{outline:2.5px solid color-mix(in srgb,var(--fd-brand) 65%,transparent);outline-offset:2px;border-radius:10px}
+input:focus,select:focus,textarea:focus{border-color:var(--fd-brand)!important;box-shadow:0 0 0 3.5px color-mix(in srgb,var(--fd-brand) 14%,transparent)}
+
+/* Tombol primer: gradasi brand + lift halus */
+.btn:not(.secondary):not(.btn-sm){
+  background:linear-gradient(135deg,var(--fd-brand-strong),var(--fd-brand) 55%,color-mix(in srgb,var(--fd-brand) 70%,#7c3aed));
+  box-shadow:0 1px 2px color-mix(in srgb,var(--fd-brand) 45%,transparent),0 6px 16px color-mix(in srgb,var(--fd-brand) 22%,transparent);
+}
+.btn{transition:transform .16s var(--fd-ease),box-shadow .16s var(--fd-ease),background .16s,filter .16s;font-weight:650;letter-spacing:.01em}
+.btn:hover{transform:translateY(-1.5px)}
+.btn:active{transform:translateY(0) scale(.985);filter:brightness(.97)}
+.btn.secondary:hover{background:var(--fd-surface-2);border-color:var(--fd-border-strong)}
+.btn-green:not(.secondary){box-shadow:0 1px 2px color-mix(in srgb,var(--fd-success) 45%,transparent),0 6px 16px color-mix(in srgb,var(--fd-success) 20%,transparent)}
+.btn-red:not(.secondary){box-shadow:0 1px 2px color-mix(in srgb,var(--fd-danger) 40%,transparent),0 6px 16px color-mix(in srgb,var(--fd-danger) 18%,transparent)}
+
+/* Sidebar: ikon dalam bubble + lembut */
+.nav-item{position:relative;font-weight:550;transition:background .15s var(--fd-ease),color .15s}
+.nav-item .ic{display:grid;place-items:center;width:30px;height:30px;border-radius:9.5px;font-size:15px;
+  background:transparent;transition:background .18s var(--fd-ease),transform .18s var(--fd-ease)}
+.nav-item:hover .ic{background:color-mix(in srgb,var(--fd-brand) 10%,transparent);transform:scale(1.06)}
+.nav-item.active{font-weight:700;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--fd-brand) 22%,transparent),0 4px 12px color-mix(in srgb,var(--fd-brand) 10%,transparent)}
+.nav-item.active .ic{background:color-mix(in srgb,var(--fd-brand) 16%,transparent)}
+.sidebar{border-right:1px solid var(--fd-sidebar-border)}
+.brand-icon{background:linear-gradient(135deg,var(--fd-brand-strong),var(--fd-brand));box-shadow:0 6px 14px color-mix(in srgb,var(--fd-brand) 35%,transparent)}
+
+/* Topbar kaca */
+.topbar{backdrop-filter:blur(14px) saturate(1.5);-webkit-backdrop-filter:blur(14px) saturate(1.5);
+  border-bottom:1px solid color-mix(in srgb,var(--fd-border) 72%,transparent)}
+.avatar{background:linear-gradient(135deg,var(--fd-brand-strong),var(--fd-accent));box-shadow:0 4px 10px color-mix(in srgb,var(--fd-brand) 30%,transparent)}
+
+/* KPI cards: garis aksen kiri + hover lift */
+.kpi-card{position:relative;overflow:hidden;transition:transform .18s var(--fd-ease),box-shadow .18s var(--fd-ease)}
+.kpi-card::before{content:'';position:absolute;inset:0 auto 0 0;width:3.5px;background:linear-gradient(180deg,var(--fd-brand),var(--fd-accent));opacity:0;transition:opacity .18s}
+.kpi-card:hover{transform:translateY(-2px);box-shadow:var(--fd-shadow-lg)}
+.kpi-card:hover::before{opacity:1}
+.kpi-icon{border-radius:12px!important}
+
+/* Panel & tabel */
+.panel{transition:box-shadow .2s var(--fd-ease)}
+.table-card{overflow:hidden}
+th{text-transform:uppercase;letter-spacing:.06em;font-weight:700;font-size:10.5px!important;color:var(--fd-faint)}
+tbody tr{transition:background .12s var(--fd-ease)}
+tbody tr:hover{background:color-mix(in srgb,var(--fd-brand) 4.5%,transparent)}
+td,th{font-variant-numeric:tabular-nums}
+
+/* Badge pill halus */
+.badge{font-weight:700;letter-spacing:.02em;border-radius:99px!important;padding:3.5px 11px!important}
+
+/* Modal: masuk dengan animasi */
+.modal-bg{animation:fdFade .18s var(--fd-ease)}
+.modal{animation:fdPop .22s var(--fd-ease);box-shadow:var(--fd-shadow-lg)}
+@keyframes fdFade{from{opacity:0}to{opacity:1}}
+@keyframes fdPop{from{opacity:0;transform:translateY(14px) scale(.97)}to{opacity:1;transform:none}}
+
+/* Hero strip: gradasi premium */
+.hero-strip{position:relative;overflow:hidden}
+.hero-strip::after{content:'';position:absolute;right:-60px;top:-60px;width:230px;height:230px;border-radius:50%;
+  background:radial-gradient(circle,color-mix(in srgb,var(--fd-brand) 14%,transparent),transparent 70%);pointer-events:none}
+#heroKas{letter-spacing:-.02em}
+
+/* Login: kartu melayang */
+.login-wrap .card{box-shadow:var(--fd-shadow-lg);animation:fdPop .3s var(--fd-ease)}
+
+/* Toast */
+.toast{animation:fdPop .2s var(--fd-ease)}
+
+/* Dark mode: permukaan sedikit lebih dalam agar kontras pas */
+html.dark .kpi-card,html.dark .panel{border-color:color-mix(in srgb,var(--fd-border) 85%,transparent)}
+
+/* Print tetap bersih */
+@media print{.btn,.theme-toggle,.menu-btn,.logout,.sidebar,.topbar{display:none!important}}

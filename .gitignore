@@ -12,3 +12,5 @@ src/config.php
 node_modules/
 vendor_bin/
 tools/*.log
+
+tools/reset-dev-pass.php

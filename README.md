@@ -1,4 +1,4 @@
-# 💰 Dompet Owner
+﻿# 💰 Dompet Owner
 
 Super-app keuangan untuk pemilik usaha:
 - **1 kas dompet owner** — semua pemasukan & pengeluaran (pribadi maupun usaha) langsung menggerakkan kas ini
@@ -58,3 +58,19 @@ Laporan owner pribadi dan laporan tiap cabang selalu bisa ditarik terpisah.
 php tests/test_core.php   # mesin kas & laporan
 php tests/test_bot.php    # logika bot (mock Telegram)
 ```
+
+## Fitur tambahan (upgrade-17)
+- **Kasbon kariawan** - beri kasbon (kas keluar), lunas tunai, atau potong otomatis saat gajian (Gaji Staf)
+- **Komisi penjualan otomatis** - rule % per cabang/kategori (Pengaturan ? rule), komisi pending masuk gajian via tombol "Masukkan Komisi ke Gajian"
+- **Leaderboard kariawan** - dashboard + bot (??), kariawan lihat peringkatnya sendiri
+- **Kontak CRM lite** - pelanggan/pemasok + omzet otomatis dari kwitansi (menu Kontak)
+- **Rekonsiliasi kas** - cocokkan saldo fisik vs buku, koreksi otomatis (Rekening & Kas)
+- **Laba per produk** - mutasi stok menyimpan harga unit; margin dihitung otomatis (Stok)
+- **QRIS kwitansi** - isi teks QR di Pengaturan; kwitansi belum-lunas menampilkan QR bayar
+- **Notifikasi WhatsApp** - via Fonnte (Pengaturan ? WA), paralel dengan Telegram
+- **Cicilan utang** - pinjaman bertenor + bunga flat, cicilan dihitung sisa/sisa-tenor
+- **2FA login** - OTP Telegram + lockout 15 menit setelah login gagal (Pengaturan - Keamanan)
+- **Kurs otomatis** - open.er-api.com harian (`tools/fx-cron.bat` ke Task Scheduler)
+- **Backup ke cloud** - dump + perintah cloud bebas (rclone/kopia), tombol "Backup + Kirim Cloud"
+
+Tes tambahan: `php tests/test_commission.php` (perlu rule komisi aktif).
