@@ -41,9 +41,3 @@ crontab -e:
 - [ ] Cron harian kirim notif
 - [ ] Webhook Midtrans 201 di dashboard
 - [ ] Backup otomatis harian (tombol "Backup + Kirim Cloud" tetap bisa dipakai)
-
-## 8. Folder uploads
-Otomatis dibuat saat upload pertama (api.php & bot). Di VPS pastikan writable:
-```bash
-mkdir -p /var/www/dompet/public/uploads && chown -R www-data:www-data /var/www/dompet/public/uploads
-```
